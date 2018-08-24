@@ -1,0 +1,13 @@
+[MESSAGES CONTROL]
+
+disable=
+    # TODO(patricktu@):Remove "too-few-public-methods" when project_info.py ok.
+    too-few-public-methods,
+    # TODO(albaltai@):Remove "fixme" when each module implement finished.
+    fixme
+
+
+[FORMAT]
+ 
+# Maximum number of characters on a single line.
+max-line-length=80
