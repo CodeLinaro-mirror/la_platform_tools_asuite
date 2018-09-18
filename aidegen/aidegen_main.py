@@ -29,7 +29,9 @@ This CLI generates project files for using in IntelliJ, such as:
     - Change directory to AOSP root first.
     $ cd /user/home/aosp/
     - Generating project files under packages/apps/Settings folder.
-    $ aidegen packages/apps/Settings
+    $ aidegen -p packages/apps/Settings
+    or
+    $ aidegen -m Settings
     or
     $ cd packages/apps/Settings;aidegen
 """
@@ -41,6 +43,7 @@ import sys
 
 from aidegen.lib.project_info import ProjectInfo
 from aidegen.lib.source_locator import locate_source
+from atest import module_info
 
 
 def _parse_args(args):
@@ -55,12 +58,14 @@ def _parse_args(args):
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        usage="aidegen {project_path}")
+        usage='aidegen [-p project_path] [-m module_name]')
     parser.required = False
-    parser.add_argument(
-        "project_path",
-        type=str,
-        help="Android module path, e.g. packages/apps/Settings.")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('-p', '--path', type=str, dest='project_path',
+                       help='Android module path, '
+                            'e.g. packages/apps/Settings.')
+    group.add_argument('-m', '--module_name', type=str, dest='module_name',
+                       help='Android module name, e.g. Settings')
     return parser.parse_args(args)
 
 
@@ -110,7 +115,8 @@ def main(argv):
         argv: A list of system arguments.
     """
     args = _parse_args(argv)
-    project = ProjectInfo(args)
+    mod_info = module_info.ModuleInfo()
+    project = ProjectInfo(args, mod_info)
     generate_module_info_json(project)
     locate_source(project)
     if generate_ide_project_file(project):

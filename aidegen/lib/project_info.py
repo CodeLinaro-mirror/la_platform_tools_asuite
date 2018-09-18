@@ -15,67 +15,73 @@
 # limitations under the License.
 """Project information.
 
-The information include some data or methods such as:
-    - real_path: A string which have the absolute path of project.
-    - TODO(b/112523202): Generate a dictionary named module_dependency which
-                         have dependent modules of project.
-    - TODO(b/112523194): Generate a dictionary named source_path which have
-                         source and jar paths of dependent modules.
+The information include methods such as:
+    - TODO(b/112523202): Generate a dictionary named module_dependency with
+                         module dependency information of a project.
+    - TODO(b/112523194): Generate a dictionary named source_path with source and
+                         jar paths of dependent modules.
     - TODO(b/112522635): A boolean value named is_generate_ide_project_file to
                          verify whether IDE project files are generated or not.
     - TODO(b/112578616): A boolean value named launch_ide_successfully to
                          verify whether IDE is launched or not.
-    - _is_correct_module_path: A method to clarify Android.mk or Android.bp
-                               exist in real_path.
 
 For example:
-    User have to change directory to AOSP root first then run aidegen tool.
-    $ cd /user/home/aosp
-    $ aidegen packages/apps/Settings
-    or change directory to the path of project then run aidegen tool.
-    $ cd /user/home/aosp/packages/apps/Settings
-    $ aidegen
-    Description:
-    - The real path of project is /user/home/aosp/pcakages/apps/Settings.
-    - The method _is_correct_module_path return True if Android.mk or
-      Android.bp exist in the real path of project.
+    - The absolute path of project is /user/home/aosp/pcakages/apps/Settings.
+    1. Users have to change directory to android source project root first then
+       run aidegen tool.
+       $ cd /user/home/aosp
+       $ aidegen -p packages/apps/Settings
+       or
+       $ aidegen -m Settings
+    2. Change directory to the path of project then run aidegen tool.
+       $ cd /user/home/aosp/packages/apps/Settings
+       $ aidegen
 """
 
 from __future__ import absolute_import
 
 import os
 
-from aidegen.lib import errors
-
-ANDROID_BLUEPRINT_NAME = "Android.bp"
-ANDROID_MAKEFILE_NAME = "Android.mk"
+from atest import constants
 
 
 class ProjectInfo(object):
     """Project information.
 
     Attributes:
-        real_path: The absolute path of project.
+        android_root_path: The path to android source root.
+        project_absolute_path: The absolute path to the project.
+        project_relative_path: The relative path to the project by
+                               android_root_path.
+        project_modules: A list of modules with the same path.
     """
 
-    def __init__(self, args):
+    def __init__(self, args, module_info):
         """ProjectInfo initialize.
 
         Args:
-            args: An argparse.Namespace class instance holding parsed args.
+            args: Includes args.module_name or args.project_path from user input
+                  , args.module_name is at high priority to decide the project
+                  path.
+            module_info: A ModuleInfo class contains data of module-info.json.
         """
-        self.real_path = (os.path.join(os.getcwd(), args.project_path)
-                          if args.project_path else os.getcwd())
-        if not self._is_correct_module_path():
-            raise errors.ProjectPathError(
-                "%s is not a correct module path." % self.real_path)
-
-    def _is_correct_module_path(self):
-        """Check if Android.mk or Android.bp exist in project_path.
-
-        Returns:
-            Boolean: True if Android.mk or Android.bp exist.
-        """
-        makefile = os.path.join(self.real_path, ANDROID_MAKEFILE_NAME)
-        blueprint = os.path.join(self.real_path, ANDROID_BLUEPRINT_NAME)
-        return os.path.exists(makefile) or os.path.exists(blueprint)
+        self.android_root_path = os.environ.get(constants.ANDROID_BUILD_TOP)
+        # TODO: Find the closest parent module if no modules defined at project
+        #       path.
+        if args.module_name:
+            assert module_info.is_module(
+                args.module_name), ('Module:%s not exists.' % args.module_name)
+            self.project_relative_path = module_info.get_paths(
+                args.module_name)[0]
+            self.project_absolute_path = os.path.join(
+                self.android_root_path, self.project_relative_path)
+        else:
+            self.project_absolute_path = (
+                os.path.join(self.android_root_path, args.project_path)
+                if args.project_path else os.getcwd())
+            self.project_relative_path = os.path.relpath(
+                self.project_absolute_path, self.android_root_path)
+        self.project_modules = module_info.get_module_names(
+            self.project_relative_path)
+        assert self.project_modules, (
+            'No modules defined at %s.' % self.project_relative_path)
