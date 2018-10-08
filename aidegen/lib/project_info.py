@@ -13,13 +13,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Project information.
 
 The information include methods such as:
-    - TODO(b/112523202): Generate a dictionary named module_dependency with
-                         module dependency information of a project.
-    - TODO(b/112523194): Generate a dictionary named source_path with source and
-                         jar paths of dependent modules.
     - TODO(b/112522635): A boolean value named is_generate_ide_project_file to
                          verify whether IDE project files are generated or not.
     - TODO(b/112578616): A boolean value named launch_ide_successfully to
@@ -44,6 +41,8 @@ import os
 
 from atest import constants
 
+_KEY_DEP = 'dependencies'
+
 
 class ProjectInfo(object):
     """Project information.
@@ -53,16 +52,21 @@ class ProjectInfo(object):
         project_absolute_path: The absolute path to the project.
         project_relative_path: The relative path to the project by
                                android_root_path.
-        project_modules: A list of modules with the same path.
+        project_module_names: A list of module names under project_absolute_path
+                              directory or it's subdirectories.
+        modules_info: A dict of all modules info by combining module-info.json
+                      with module_bp_java_deps.json.
+        dep_modules: A dict has recursively dependent modules of
+                     project_module_names.
     """
 
     def __init__(self, args, module_info):
         """ProjectInfo initialize.
 
         Args:
-            args: Includes args.module_name or args.project_path from user input
-                  , args.module_name is at high priority to decide the project
-                  path.
+            args: Includes args.module_name or args.project_path from user
+                  input, args.module_name is at high priority to decide the
+                  project path.
             module_info: A ModuleInfo class contains data of module-info.json.
         """
         self.android_root_path = os.environ.get(constants.ANDROID_BUILD_TOP)
@@ -77,11 +81,79 @@ class ProjectInfo(object):
                 self.android_root_path, self.project_relative_path)
         else:
             self.project_absolute_path = (
-                os.path.join(self.android_root_path, args.project_path)
-                if args.project_path else os.getcwd())
+                os.path.join(self.android_root_path, args.project_path) if
+                args.project_path else os.getcwd())
             self.project_relative_path = os.path.relpath(
                 self.project_absolute_path, self.android_root_path)
-        self.project_modules = module_info.get_module_names(
+        self.project_module_names = module_info.get_module_names(
             self.project_relative_path)
-        assert self.project_modules, (
+        assert self.project_module_names, (
             'No modules defined at %s.' % self.project_relative_path)
+        self.modules_info = {}
+        self.dep_modules = {}
+        self.iml_path = ''
+        # Append default hard-code modules, source paths and jar files.
+        # TODO(b/112058649): Do more research to clarify how to remove these
+        #                    hard-code sources.
+        self.project_module_names.extend(
+            [
+                # Framework module is always needed for dependencies but it
+                # might not be located by module dependency.
+                'framework',
+                # The module can't be located through module dependency.
+                # Without it, a lot of java files will have errors "cannot
+                # resolve symbol" in IntelliJ since they import packages
+                # android.Manifest and com.android.internal.R.
+                'org.apache.http.legacy.stubs.system']
+        )
+        self.source_path = {'source_folder_path': set(), 'jar_path':set()}
+
+    def set_modules_under_project_path(self):
+        """Find modules under the project path whose class is JAVA_LIBRARIES."""
+        for name, data in self.modules_info.items():
+            if ('class' in data and 'JAVA_LIBRARIES' in data['class']
+                    and 'path' in data and data['path'][0].startswith(
+                        self.project_relative_path)):
+                if name not in self.project_module_names:
+                    self.project_module_names.append(name)
+
+    def get_dep_modules(self, module_names=None):
+        """Recursively find dependent modules of the project.
+
+        Find depentdent modules by dependencies parameter of each module.
+        For example:
+            The module_names is ['m1'].
+            The modules_info is
+            {
+                'm1': {'dependencies': ['m2'], 'path': ['path_to_m1']},
+                'm2': {'path': ['path_to_m4']},
+                'm3': {'path': ['path_to_m1']}
+                'm4': {'path': []}
+            }
+            The result dependent modules are:
+            {
+                'm1': {'dependencies': ['m2'], 'path': ['path_to_m1']},
+                'm2': {'path': ['path_to_m4']},
+                'm3': {'path': ['path_to_m1']}
+            }
+            Note that:
+                1. m4 is not in the result as it's not among dependent modules.
+                2. m3 is in the result as it has the same path to m1.
+
+        Args:
+            module_names: A list of module's name.
+
+        Returns:
+            deps: A dict contains all dependent modules data of given modules.
+        """
+        dep = {}
+        if not module_names:
+            self.set_modules_under_project_path()
+            module_names = self.project_module_names
+        for name in module_names:
+            if name in self.modules_info:
+                if name not in dep:
+                    dep[name] = self.modules_info[name]
+                if _KEY_DEP in dep[name] and dep[name][_KEY_DEP]:
+                    dep.update(self.get_dep_modules(dep[name][_KEY_DEP]))
+        return dep
