@@ -44,7 +44,7 @@ from atest import constants
 _KEY_DEP = 'dependencies'
 
 
-class ProjectInfo(object):
+class ProjectInfo():
     """Project information.
 
     Attributes:
@@ -106,7 +106,11 @@ class ProjectInfo(object):
                 # android.Manifest and com.android.internal.R.
                 'org.apache.http.legacy.stubs.system']
         )
-        self.source_path = {'source_folder_path': set(), 'jar_path':set()}
+        self.source_path = {
+            'source_folder_path': set(),
+            'test_folder_path': set(),
+            'jar_path':set()
+        }
 
     def set_modules_under_project_path(self):
         """Find modules under the project path whose class is JAVA_LIBRARIES."""
@@ -120,7 +124,7 @@ class ProjectInfo(object):
     def get_dep_modules(self, module_names=None):
         """Recursively find dependent modules of the project.
 
-        Find depentdent modules by dependencies parameter of each module.
+        Find dependent modules by dependencies parameter of each module.
         For example:
             The module_names is ['m1'].
             The modules_info is
@@ -141,7 +145,7 @@ class ProjectInfo(object):
                 2. m3 is in the result as it has the same path to m1.
 
         Args:
-            module_names: A list of module's name.
+            module_names: A list of module names.
 
         Returns:
             deps: A dict contains all dependent modules data of given modules.
