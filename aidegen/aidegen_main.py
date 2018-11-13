@@ -13,6 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """AIDEgen
 
 This CLI generates project files for using in IntelliJ, such as:
@@ -29,7 +30,9 @@ This CLI generates project files for using in IntelliJ, such as:
     - Change directory to AOSP root first.
     $ cd /user/home/aosp/
     - Generating project files under packages/apps/Settings folder.
-    $ aidegen packages/apps/Settings
+    $ aidegen -p packages/apps/Settings
+    or
+    $ aidegen -m Settings
     or
     $ cd packages/apps/Settings;aidegen
 """
@@ -39,6 +42,9 @@ from __future__ import absolute_import
 import argparse
 import sys
 
+from aidegen.lib.ide_util import launch_ide
+from aidegen.lib.module_info_util import ModuleInfoUtil
+from aidegen.lib.project_file_gen import generate_ide_project_file
 from aidegen.lib.project_info import ProjectInfo
 from aidegen.lib.source_locator import locate_source
 
@@ -55,50 +61,23 @@ def _parse_args(args):
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        usage="aidegen {project_path}")
+        usage='aidegen [-p project_path] [-m module_name]')
     parser.required = False
-    parser.add_argument(
-        "project_path",
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        '-p',
+        '--path',
         type=str,
-        help="Android module path, e.g. packages/apps/Settings.")
+        dest='project_path',
+        help='Android module path, '
+        'e.g. packages/apps/Settings.')
+    group.add_argument(
+        '-m',
+        '--module_name',
+        type=str,
+        dest='module_name',
+        help='Android module name, e.g. Settings')
     return parser.parse_args(args)
-
-
-def generate_module_info_json(project):
-    """Generate module dependency information.
-
-    TODO(bralee@): Remove this function when lib.module_info_util is ready.
-
-    Args:
-        project: ProjectInfo class.
-    """
-    project.module_dependency = {}
-
-
-def generate_ide_project_file(project):
-    """Generate project files used for IDE tool.
-
-    TODO(shinwang@): Remove this function when lib.project_file_gen is ready.
-
-    Args:
-        project: ProjectInfo class.
-
-    Returns:
-        Boolean: True if IDE project files are created successfully.
-    """
-    project.is_generate_ide_project_file = True
-    return project.is_generate_ide_project_file
-
-
-def launch_ide(project):
-    """Launch IDE.
-
-    TODO(albaltai@): Remove this function when lib.ide_util is ready.
-
-    Args:
-        project: ProjectInfo class.
-    """
-    project.launch_ide_successfully = True
 
 
 def main(argv):
@@ -110,11 +89,13 @@ def main(argv):
         argv: A list of system arguments.
     """
     args = _parse_args(argv)
-    project = ProjectInfo(args)
-    generate_module_info_json(project)
+    module_util_obj = ModuleInfoUtil()
+    project = ProjectInfo(args, module_util_obj.atest_module_info)
+    project.modules_info = module_util_obj.generate_module_info_json(project)
+    project.dep_modules = project.get_dep_modules()
     locate_source(project)
-    if generate_ide_project_file(project):
-        launch_ide(project)
+    generate_ide_project_file(project)
+    launch_ide(project.iml_path)
 
 
 if __name__ == "__main__":
