@@ -18,7 +18,7 @@
 Unittest constants.
 
 Unittest constants get their own file since they're used purely for testing and
-should not be combined with constants_defaults as part of normal atest
+should not be combined with constants_defaults as part of normal aidegen
 operation.
 """
 
@@ -28,9 +28,9 @@ from aidegen.constant import ROOT_DIR as rp
 
 # The data below is only for test usage.
 TESTDATA_PATH = os.path.join(rp, "test_data")  # folder test_data path
-IDEA_SH_FIND = (b'/opt/intellij-ce-2018.1/bin/idea.sh\n'
-                b'/opt/intellij-ce-2017.2/bin/idea.sh\n')  # script path data
+IDEA_SH_FIND = ['/opt/intellij-ce-2018.1/bin/idea.sh',
+                '/opt/intellij-ce-2017.2/bin/idea.sh']  # script path data
 
-SH_GODEN_SAMPLE = b'/opt/intellij-ce-2018.1/bin/idea.sh'
+SH_GODEN_SAMPLE = '/opt/intellij-ce-2018.1/bin/idea.sh'
 
 IDEA_SH_FIND_NONE = ''  # Neither IntelliJ CE nor UE script exists.
