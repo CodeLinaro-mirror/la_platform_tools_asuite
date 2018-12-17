@@ -18,6 +18,7 @@
 
 from __future__ import absolute_import
 
+import logging
 import os
 
 from aidegen import constant
@@ -27,13 +28,13 @@ from atest import atest_utils
 from atest import constants
 
 _KEY_DEP = 'dependencies'
-_KEY_DEPTH = 'depth'
 _ANDROID_MK = 'Android.mk'
 _ANDROID_BP = 'Android.bp'
 _ANDROID_MK_WARN = (
     '%s contains Android.mk file(s) in its dependencies:\n%s\nPlease help '
-    'convert these files into blueprint format in the future, otherwise AIDEGen'
-    'may not be able to include all module dependencies.')
+    'convert these files into blueprint format in the future, otherwise '
+    'AIDEGen may not be able to include all module dependencies.')
+_FILTER_CLASSES = {'APPS', 'JAVA_LIBRARIES'}
 
 
 class ProjectInfo():
@@ -92,7 +93,11 @@ class ProjectInfo():
             # com.android.internal.R.
             'org.apache.http.legacy.stubs.system'
         ])
-        self.source_path = {'source_folder_path': set(), 'jar_path': set()}
+        self.source_path = {
+            'source_folder_path': set(),
+            'test_folder_path': set(),
+            'jar_path': set()
+        }
         self.dep_modules = self.get_dep_modules()
         mk_set = set(self._search_android_make_files(module_info))
         if mk_set:
@@ -124,15 +129,25 @@ class ProjectInfo():
                 yield '\t' + os.path.join(rel_path, _ANDROID_MK)
 
     def set_modules_under_project_path(self):
-        """Find modules under the project path whose class is JAVA_LIBRARIES."""
+        """Find modules whose class is qualified to be included under the
+           project path.
+        """
+        logging.info('Find modules whose class is in %s under %s.',
+                     _FILTER_CLASSES, self.project_relative_path)
         for name, data in self.modules_info.items():
-            if ('class' in data and 'JAVA_LIBRARIES' in data['class']
-                    and 'path' in data
-                    and data['path'][0].startswith(self.project_relative_path)):
-                if name not in self.project_module_names:
+            path = data['path'][0] if 'path' in data else None
+            if ('class' in data and path and
+                    (path == self.project_relative_path or
+                     path.startswith(self.project_relative_path + os.sep))):
+                if not set(data['class']).intersection(_FILTER_CLASSES):
+                    logging.info(('Module %s\'s class setting is %s, none of '
+                                  'which is included in %s, skipping this '
+                                  'module in the project.'),
+                                 name, data['class'], _FILTER_CLASSES)
+                elif name not in self.project_module_names:
                     self.project_module_names.append(name)
 
-    def get_dep_modules(self, module_names=None):
+    def get_dep_modules(self, module_names=None, depth=0):
         """Recursively find dependent modules of the project.
 
         Find dependent modules by dependencies parameter of each module.
@@ -147,9 +162,10 @@ class ProjectInfo():
             }
             The result dependent modules are:
             {
-                'm1': {'dependencies': ['m2'], 'path': ['path_to_m1']},
-                'm2': {'path': ['path_to_m4']},
-                'm3': {'path': ['path_to_m1']}
+                'm1': {'dependencies': ['m2'], 'path': ['path_to_m1']
+                       'depth': 0},
+                'm2': {'path': ['path_to_m4'], 'depth': 1},
+                'm3': {'path': ['path_to_m1'], 'depth': 0}
             }
             Note that:
                 1. m4 is not in the result as it's not among dependent modules.
@@ -157,6 +173,8 @@ class ProjectInfo():
 
         Args:
             module_names: A list of module names.
+            depth: An integer shows the depth of module dependency referenced by
+                   source. Zero means the max module depth.
 
         Returns:
             deps: A dict contains all dependent modules data of given modules.
@@ -167,10 +185,11 @@ class ProjectInfo():
             module_names = self.project_module_names
         for name in module_names:
             if name in self.modules_info:
-                if name not in dep:
-                    dep[name] = self.modules_info[name]
+                dep[name] = self.modules_info[name]
                 if _KEY_DEP in dep[name] and dep[name][_KEY_DEP]:
-                    dep.update(self.get_dep_modules(dep[name][_KEY_DEP]))
+                    dep.update(
+                        self.get_dep_modules(dep[name][_KEY_DEP], depth + 1))
+                dep[name][constant.KEY_DEPTH] = depth
         return dep
 
     @classmethod
