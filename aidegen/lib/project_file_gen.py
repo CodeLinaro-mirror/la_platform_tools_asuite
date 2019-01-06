@@ -99,6 +99,8 @@ def _generate_intellij_project_file(project_info, iml_path_list=None):
     """
     source_dict = dict.fromkeys(
         list(project_info.source_path['source_folder_path']), False)
+    source_dict.update(
+        dict.fromkeys(list(project_info.source_path['test_folder_path']), True))
     project_info.iml_path, _ = _generate_iml(
         constant.ANDROID_ROOT_PATH, project_info.project_absolute_path,
         source_dict, list(project_info.source_path['jar_path']),
@@ -339,7 +341,7 @@ def _generate_iml(root_path, module_path, source_dict, jar_dependencies,
     # Separate module and dependencies source folder
     project_source_dict = {}
     for source in list(source_dict):
-        if source.startswith(relative_path):
+        if source == relative_path or source.startswith(relative_path + os.sep):
             is_test = source_dict.get(source)
             source_dict.pop(source)
             project_source_dict.update({source: is_test})
