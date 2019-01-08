@@ -23,6 +23,7 @@ import os
 import re
 
 from aidegen.lib import errors
+from atest import atest_utils
 
 # Parse package name from the package declaration line of a java.
 # Group matches "foo.bar" of line "package foo.bar;" or "package foo.bar"
@@ -45,7 +46,21 @@ _IGNORE_DIRS = [
 ]
 
 
-def locate_source(project):
+def multi_projects_locate_source(projects, verbose, build=True):
+    """Locate the paths of dependent source folders and jar files with projects.
+
+    Args:
+        projects: A list of ProjectInfo instances. Information of a project such
+                  as project relative path, project real path, project
+                  dependencies.
+        verbose: A boolean, if true displays full build output.
+        build: A boolean, if true build the modules whose jars don't exist.
+    """
+    for project in projects:
+        locate_source(project, verbose, build)
+
+
+def locate_source(project, verbose, build=True):
     """Locate the paths of dependent source folders and jar files.
 
     Try to reference source folder path as dependent module unless the
@@ -70,11 +85,13 @@ def locate_source(project):
             }
 
     Args:
-        project: ProjectInfo class. Information of a project such as project
-                 relative path, project real path, project dependencies.
+        project: A ProjectInfo instance. Information of a project such as
+                 project relative path, project real path, project dependencies.
+        verbose: A boolean, if true displays full build output.
+        build: A boolean, if true build the modules whose jar doesn't exist.
 
     Example usage:
-        project.source_path = locate_source(project)
+        project.source_path = locate_source(project, verbose, False)
         E.g.
             project.source_path = {
                 'source_folder_path': ['path/to/source/folder1',
@@ -85,13 +102,37 @@ def locate_source(project):
     if not hasattr(project, 'dep_modules') or not project.dep_modules:
         raise errors.EmptyModuleDependencyError(
             'Dependent modules dictionary is empty.')
+    missing_jars = set()
     for module_name in project.dep_modules:
         module = ModuleData(project.android_root_path, module_name,
                             project.dep_modules[module_name])
         module.locate_sources_path()
         project.source_path['source_folder_path'].update(module.src_dirs)
-        project.source_path['test_folder_path'].update(module.test_dirs)
         project.source_path['jar_path'].update(module.jar_files)
+        if module.jar_nonexistent:
+            missing_jars.add(module_name)
+    if missing_jars:
+        if build:
+            _build_dependencies(verbose, missing_jars)
+            locate_source(project, verbose, build=False)
+        else:
+            logging.warning(
+                'Jar files in the list don\'t exist:\n%s.', '\n'.join(
+                    sum([project.dep_modules[module][_KEY_INSTALLED]
+                         for module in missing_jars], [])))
+
+
+def _build_dependencies(verbose, missing_jars):
+    """Build given modules when the jars of the modules don't exist.
+
+    Args:
+        verbose: A boolean, if true displays full build output.
+        missing_jars: A list of modules name which jar file doesn't exist.
+    """
+    logging.info('Ready to build the modules for generating jar.')
+    if not atest_utils.build(missing_jars, verbose=verbose):
+        raise errors.BuildFailureError(
+            'Failed to build %s.' % ', '.join(missing_jars))
 
 
 class ModuleData():
@@ -130,7 +171,6 @@ class ModuleData():
                             if _KEY_PATH in self.module_data
                             and self.module_data[_KEY_PATH] else '')
         self.src_dirs = set()
-        self.test_dirs = set()
         self.jar_files = set()
         self.is_android_support_module = self.module_path.startswith(
             _ANDROID_SUPPORT_PATH_KEYWORD)
@@ -139,6 +179,8 @@ class ModuleData():
             and self.module_data[_KEY_JARJAR_RULES][0] == _JARJAR_RULES_FILE)
         self.jars_existed = (_KEY_JARS in self.module_data
                              and self.module_data[_KEY_JARS])
+        self.referenced_by_jar = False
+        self.jar_nonexistent = False
         # Add the directory contains R.java of the module with APPS class. If
         # the module is under packages/apps, the R.java will be created
         # including other sub app modules and placed in srcjars. However, if
@@ -176,13 +218,10 @@ class ModuleData():
                         src_dir = self._get_source_folder(src_item)
                 else:
                     # To record what files except java and srcjar in the srcs.
-                    logging.warning('%s is not in parsing scope.', src_item)
+                    logging.info('%s is not in parsing scope.', src_item)
                 if src_dir and not any(path in src_dir
                                        for path in _IGNORE_DIRS):
                     self.src_dirs.add(src_dir)
-                    if os.path.splitext(src_item)[0].lower().endswith(
-                            'test') and src_dir != os.path.dirname(src_item):
-                        self.test_dirs.add(os.path.dirname(src_item))
 
     # pylint: disable=inconsistent-return-statements
     def _get_source_folder(self, java_file):
@@ -229,14 +268,11 @@ class ModuleData():
         Returns:
             Boolean: True if jar_path is an existing jar file.
         """
+        self.referenced_by_jar = True
         jar_abspath = os.path.join(self.android_root_path, jar_path)
         if jar_path.endswith(_JAR) and os.path.isfile(jar_abspath):
             self.jar_files.add(jar_path)
             return True
-        if not jar_path.endswith(_JAR):
-            logging.warning('Not a jar file: %s.', jar_path)
-        else:
-            logging.warning('Jar file doesn\'t exist: %s.', jar_abspath)
 
     def _append_jar_from_installed(self, specific_dir=None):
         """Append a jar file's path to the list of jar_files with matching
@@ -290,3 +326,5 @@ class ModuleData():
         elif self.jars_existed:
             self._set_jars_jarfile()
         self._collect_srcs_paths()
+        if self.referenced_by_jar and not self.jar_files:
+            self.jar_nonexistent = True
