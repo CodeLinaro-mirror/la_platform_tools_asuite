@@ -22,19 +22,25 @@ import logging
 import os
 
 from aidegen import constant
+from aidegen.lib.common_util import COLORED_INFO
 from aidegen.lib.common_util import get_related_paths
 from aidegen.lib.module_info_util import generate_module_info_json
-from atest import atest_utils
-from atest import constants
 
 _KEY_DEP = 'dependencies'
+_KEY_ROBOTESTS = ['robotests', 'robolectric']
 _ANDROID_MK = 'Android.mk'
 _ANDROID_BP = 'Android.bp'
+_CONVERT_MK_URL = ('https://android.googlesource.com/platform/build/soong/'
+                   '#convert-android_mk-files')
 _ANDROID_MK_WARN = (
-    '%s contains Android.mk file(s) in its dependencies:\n%s\nPlease help '
+    '{} contains Android.mk file(s) in its dependencies:\n{}\nPlease help '
     'convert these files into blueprint format in the future, otherwise '
-    'AIDEGen may not be able to include all module dependencies.')
-_FILTER_CLASSES = {'APPS', 'JAVA_LIBRARIES'}
+    'AIDEGen may not be able to include all module dependencies.\nPlease visit '
+    '%s for reference on how to convert makefile.' % _CONVERT_MK_URL)
+_FILTER_CLASSES = {'APPS', 'JAVA_LIBRARIES', 'ROBOLECTRIC'}
+_ROBOLECTRIC_MODULE = 'Robolectric_all'
+_NOT_TARGET = ('Module %s\'s class setting is %s, none of which is included in '
+               '%s, skipping this module in the project.')
 
 
 class ProjectInfo():
@@ -68,22 +74,21 @@ class ProjectInfo():
                     locating the target, project with matching module name of
                     the given target has a higher priority than project path.
         """
-        # TODO: Find the closest parent module if no modules defined at project
-        #       path.
         rel_path, abs_path = get_related_paths(module_info, target)
-        # If the project is for entire Android source tree, change the target to
-        # source tree's root folder name. In this way, we give IDE project file
-        # a more specific name. e.g, master.iml.
-        if abs_path == constant.ANDROID_ROOT_PATH:
-            target = os.path.basename(abs_path)
-        self.project_module_names = module_info.get_module_names(rel_path)
+        target = self._get_target_name(target, abs_path)
+        self.project_module_names = set(module_info.get_module_names(rel_path))
         self.project_relative_path = rel_path
         self.project_absolute_path = abs_path
         self.iml_path = ''
-        # Append default hard-code modules, source paths and jar files.
+        self._set_default_modue_and_init_source_path()
+        self.dep_modules = self.get_dep_modules()
+        self._display_convert_make_files_message(module_info, target)
+
+    def _set_default_modue_and_init_source_path(self):
+        """Append default hard-code modules, source paths and jar files."""
         # TODO(b/112058649): Do more research to clarify how to remove these
         #                    hard-code sources.
-        self.project_module_names.extend([
+        self.project_module_names.update([
             # Framework module is always needed for dependencies but it might
             # not be located by module dependency.
             'framework',
@@ -98,27 +103,38 @@ class ProjectInfo():
             'test_folder_path': set(),
             'jar_path': set()
         }
-        self.dep_modules = self.get_dep_modules()
+
+    def _display_convert_make_files_message(self, module_info, target):
+        """Show message info users convert their Android.mk to Android.bp.
+
+        Args:
+            module_info: A ModuleInfo instance contains data of
+                         module-info.json.
+            target: When locating the target module or project path from users'
+                    input, project with matching module name of the given target
+                    has a higher priority than project path.
+        """
         mk_set = set(self._search_android_make_files(module_info))
         if mk_set:
-            print('\n%s\n%s\n' % (atest_utils.colorize(
-                "Warning...", constants.MAGENTA), _ANDROID_MK_WARN %
-                                  (target, '\n'.join(mk_set))))
+            print('\n{} {}\n'.format(
+                COLORED_INFO('Warning:'),
+                _ANDROID_MK_WARN.format(target, '\n'.join(mk_set))))
 
     def _search_android_make_files(self, module_info):
         """Search project and dependency modules contain Android.mk files.
+
+        If there is only Android.mk but no Android.bp, we'll show the warning
+        message, otherwise we won't.
 
         Args:
             module_info: A ModuleInfo instance contains data of
                          module-info.json.
 
         Yields:
-            A string: relative path of Android.mk.
+            A string: the relative path of Android.mk.
         """
         android_mk = os.path.join(self.project_absolute_path, _ANDROID_MK)
         android_bp = os.path.join(self.project_absolute_path, _ANDROID_BP)
-        # If there is only Android.mk but no Android.bp, we'll show the warning
-        # message, otherwise we wont.
         if os.path.isfile(android_mk) and not os.path.isfile(android_bp):
             yield '\t' + os.path.join(self.project_relative_path, _ANDROID_MK)
         for module_name in self.dep_modules:
@@ -135,17 +151,67 @@ class ProjectInfo():
         logging.info('Find modules whose class is in %s under %s.',
                      _FILTER_CLASSES, self.project_relative_path)
         for name, data in self.modules_info.items():
-            path = data['path'][0] if 'path' in data else None
-            if ('class' in data and path and
-                    (path == self.project_relative_path or
-                     path.startswith(self.project_relative_path + os.sep))):
-                if not set(data['class']).intersection(_FILTER_CLASSES):
-                    logging.info(('Module %s\'s class setting is %s, none of '
-                                  'which is included in %s, skipping this '
-                                  'module in the project.'),
-                                 name, data['class'], _FILTER_CLASSES)
-                elif name not in self.project_module_names:
-                    self.project_module_names.append(name)
+            if self._is_relative_module(data):
+                if self._is_a_target_module(data):
+                    self.project_module_names.add(name)
+                    if self._is_a_robolectric_module(data):
+                        self.project_module_names.add(_ROBOLECTRIC_MODULE)
+                else:
+                    logging.info(_NOT_TARGET, name, data['class'],
+                                 _FILTER_CLASSES)
+
+    def _is_relative_module(self, data):
+        """Determine if the module is a relative module to this project.
+
+        Args:
+            data: the module-info dictionary of the checked module.
+
+        Returns:
+            A boolean, true if relative, otherwise false.
+        """
+        if not 'path' in data:
+            return False
+        path = data['path'][0]
+        if ('class' in data and
+                (path == self.project_relative_path or
+                 path.startswith(self.project_relative_path + os.sep))):
+            return True
+        return False
+
+    @staticmethod
+    def _is_a_target_module(data):
+        """Determine if the module is a target module.
+
+        A module's class is in {'APPS', 'JAVA_LIBRARIES', 'ROBOLECTRIC'}
+
+        Args:
+            data: the module-info dictionary of the checked module.
+
+        Returns:
+            A boolean, true if is a target module, otherwise false.
+        """
+        if not 'class' in data:
+            return False
+        return set(data['class']).intersection(_FILTER_CLASSES)
+
+    @staticmethod
+    def _is_a_robolectric_module(data):
+        """Determine if the module is a robolectric module.
+
+        Hardcode for robotest dependency. If a folder named robotests or
+        robolectric is in the module's path hierarchy then add the module
+        Robolectric_all as a dependency.
+
+        Args:
+            data: the module-info dictionary of the checked module.
+
+        Returns:
+            A boolean, true if robolectric, otherwise false.
+        """
+        if not 'path' in data:
+            return False
+        path = data['path'][0]
+        return any(key_dir in path.split(os.sep) for key_dir in _KEY_ROBOTESTS)
 
     def get_dep_modules(self, module_names=None, depth=0):
         """Recursively find dependent modules of the project.
@@ -180,16 +246,21 @@ class ProjectInfo():
             deps: A dict contains all dependent modules data of given modules.
         """
         dep = {}
+        children = set()
         if not module_names:
             self.set_modules_under_project_path()
             module_names = self.project_module_names
+            self.project_module_names = set()
         for name in module_names:
-            if name in self.modules_info:
+            if (name in self.modules_info and
+                    name not in self.project_module_names):
                 dep[name] = self.modules_info[name]
-                if _KEY_DEP in dep[name] and dep[name][_KEY_DEP]:
-                    dep.update(
-                        self.get_dep_modules(dep[name][_KEY_DEP], depth + 1))
                 dep[name][constant.KEY_DEPTH] = depth
+                self.project_module_names.add(name)
+                if _KEY_DEP in dep[name] and dep[name][_KEY_DEP]:
+                    children.update(dep[name][_KEY_DEP])
+        if children:
+            dep.update(self.get_dep_modules(children, depth+1))
         return dep
 
     @classmethod
@@ -209,3 +280,24 @@ class ProjectInfo():
         cls.modules_info = generate_module_info_json(module_info, targets,
                                                      verbose)
         return [ProjectInfo(module_info, target) for target in targets]
+
+    @staticmethod
+    def _get_target_name(target, abs_path):
+        """Get target name from target's absolute path.
+
+        If the project is for entire Android source tree, change the target to
+        source tree's root folder name. In this way, we give IDE project file
+        a more specific name. e.g, master.iml.
+
+        Args:
+            target: Includes target module or project path from user input, when
+                    locating the target, project with matching module name of
+                    the given target has a higher priority than project path.
+            abs_path: A string, target's absolute path.
+
+        Returns:
+            A string, the target name.
+        """
+        if abs_path == constant.ANDROID_ROOT_PATH:
+            return os.path.basename(abs_path)
+        return target
