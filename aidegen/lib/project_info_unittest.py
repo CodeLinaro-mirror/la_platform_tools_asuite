@@ -39,11 +39,11 @@ _EXPECT_DEPENDENT_MODULES = {
 
 # pylint: disable=protected-access
 # pylint: disable=invalid-name
-class SourceLocatorUnittests(unittest.TestCase):
-    """Unit tests for source_locator.py"""
+class ProjectInfoUnittests(unittest.TestCase):
+    """Unit tests for project_info.py"""
 
     def setUp(self):
-        """Initialize new avd_spec.AVDSpec."""
+        """Initialize arguments for ProjectInfo."""
         self.args = mock.MagicMock()
         self.args.module_name = 'm1'
         self.args.project_path = ''
@@ -54,7 +54,8 @@ class SourceLocatorUnittests(unittest.TestCase):
         mock_module_info.is_module.return_value = True
         mock_module_info.get_paths.return_value = ['m1']
         mock_module_info.get_module_names.return_value = ['m1']
-        proj_info = project_info.ProjectInfo(self.args, mock_module_info)
+        proj_info = project_info.ProjectInfo(mock_module_info,
+                                             self.args.module_name)
         proj_info.modules_info = _MODULE_INFO
         proj_info.dep_modules = proj_info.get_dep_modules()
         self.assertEqual(proj_info.dep_modules, _EXPECT_DEPENDENT_MODULES)
