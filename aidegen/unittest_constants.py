@@ -35,3 +35,5 @@ IDEA_SH_FIND = [
 SH_GODEN_SAMPLE = '/opt/intellij-ce-2018.1/bin/idea.sh'
 
 IDEA_SH_FIND_NONE = ''  # Neither IntelliJ CE nor UE script exists.
+TEST_PATH = 'path'
+TEST_MODULE = 'test'

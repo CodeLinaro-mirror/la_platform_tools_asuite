@@ -20,25 +20,36 @@ This module has a collection of functions that provide helper functions to
 other modules.
 """
 
-import functools
 import logging
 import os
 import time
 
+from functools import partial
+from functools import wraps
+
 from aidegen import constant
+from atest import constants
+from atest.atest_utils import colorize
+
+COLORED_INFO = partial(colorize, color=constants.MAGENTA, highlight=False)
 
 
-def time_logged(func):
+def time_logged(func=None, *, message='', maximum=1):
     """Decorate a function to find out how much time it spends.
 
     Args:
         func: a function is to be calculated its spending time.
+        message: the message the decorated function wants to show.
+        maximum: a interger, minutes. If time exceeds the maximum time show
+                 message, otherwise doesn't.
 
     Returns:
         The wrapper function.
     """
+    if func is None:
+        return partial(time_logged, message=message, maximum=maximum)
 
-    @functools.wraps(func)
+    @wraps(func)
     def wrapper(*args, **kwargs):
         """A wrapper function."""
 
@@ -46,9 +57,12 @@ def time_logged(func):
         try:
             return func(*args, **kwargs)
         finally:
+            timestamp = time.time() - start
             logging.debug('{}.{} time consumes: {:.2f}s'.format(
                 func.__module__, func.__name__,
-                time.time() - start))
+                timestamp))
+            if message and timestamp > maximum * 60:
+                print(message)
 
     return wrapper
 
@@ -66,17 +80,24 @@ def get_related_paths(module_info, target=None):
                 4. Current directory, e.g. . or no argument
 
     Return:
-        rel_path: The relative path of a module.
-        abs_path: The absolute path of a module.
+        rel_path: The relative path of a module, return None if no matching
+                  module found.
+        abs_path: The absolute path of a module, return None if no matching
+                  module found.
     """
+    rel_path = None
+    abs_path = None
     if target:
         # User inputs a module name.
         if module_info.is_module(target):
-            rel_path = module_info.get_paths(target)[0]
-            abs_path = os.path.join(constant.ANDROID_ROOT_PATH, rel_path)
-        # User inputs a module path.
-        elif module_info.get_module_names(target):
-            rel_path = target
+            paths = module_info.get_paths(target)
+            if paths:
+                rel_path = paths[0]
+                abs_path = os.path.join(constant.ANDROID_ROOT_PATH, rel_path)
+        # User inputs a module path or a relative path of android root folder.
+        elif (module_info.get_module_names(target) or
+              os.path.isdir(os.path.join(constant.ANDROID_ROOT_PATH, target))):
+            rel_path = target.strip(os.sep)
             abs_path = os.path.join(constant.ANDROID_ROOT_PATH, rel_path)
         # User inputs a relative path of current directory.
         else:
@@ -105,3 +126,19 @@ def is_target_android_root(atest_module_info, targets):
         if abs_path == constant.ANDROID_ROOT_PATH:
             return True
     return False
+
+
+def has_build_target(atest_module_info, rel_path):
+    """Determine if a relative path contains buildable module.
+
+    Args:
+        atest_module_info: A ModuleInfo instance contains data of
+                           module-info.json.
+        rel_path: The module path relative to android root.
+
+    Returns:
+        True if the relative path contains a build target, otherwise false.
+    """
+    return any(
+        mod_path.startswith(rel_path)
+        for mod_path in atest_module_info.path_to_module_info)
