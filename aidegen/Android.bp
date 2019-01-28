@@ -32,15 +32,13 @@ python_binary_host {
     defaults: ["aidegen_default"],
     main: "aidegen_main.py",
     srcs: [
-        "aidegen_main.py",
-	"constant.py"
+        "**/*.py",
     ],
     data: [
         "templates/**/*",
     ],
     libs: [
-        "aidegen_lib",
-        "atest_module_info"
+        "atest_module_info",
     ],
 }
 
@@ -48,6 +46,9 @@ python_library_host {
     name: "aidegen_lib",
     defaults: ["aidegen_default"],
     srcs: [
+        "aidegen_main.py",
+        "constant.py",
+        "unittest_constants.py",
         "lib/*.py",
     ]
 }
