@@ -23,10 +23,10 @@ import unittest
 
 from aidegen import unittest_constants
 from aidegen.lib import project_file_gen
+from atest import module_info
 
 
 # pylint: disable=protected-access
-# pylint: disable=invalid-name
 class AidegenProjectFileGenUnittest(unittest.TestCase):
     """Unit tests for project_file_gen.py."""
 
@@ -38,7 +38,6 @@ class AidegenProjectFileGenUnittest(unittest.TestCase):
     _PROJECT_FACET_SAMPLE = os.path.join(_TEST_DATA_PATH, 'project_facet.iml')
     _MODULE_DEP_SAMPLE = os.path.join(_TEST_DATA_PATH, 'module_dependency.iml')
     _IML_SAMPLE = os.path.join(_TEST_DATA_PATH, 'test.iml')
-    _IML_TEMPLEATE_SAMPLE = os.path.join(_TEST_DATA_PATH, 'test-template.iml')
     _DEPENDENCIES_IML_SAMPLE = os.path.join(_TEST_DATA_PATH, 'dependencies.iml')
     _MODULE_XML_SAMPLE = os.path.join(_TEST_DATA_PATH, 'modules.xml')
     _VCS_XML_SAMPLE = os.path.join(_TEST_DATA_PATH, 'vcs.xml')
@@ -61,13 +60,11 @@ class AidegenProjectFileGenUnittest(unittest.TestCase):
         'test_data/project/level11/level22/level31': False,
         'test_data/project/level12/level22': False,
     }
-    _ANDROID_SOURCE_RELATIVE_PATH = 'test_data/project/level12/'
+    _ANDROID_SOURCE_RELATIVE_PATH = 'test_data/project/level12'
     _SAMPLE_CONTENT_LIST = ['a/b/c/d', 'e/f']
     _SAMPLE_TRIMMED_SOURCE_LIST = ['a/b/c/d', 'e/f/a', 'e/f/b/c', 'e/f/g/h']
-    _TEST_DICT = {'SystemUI': 'SystemUI.iml', 'tradefed': 'core.iml'}
-    _PRODUCT_DIR = '$PROJECT_DIR$'
 
-    def test_handle_facet_with_android_project(self):
+    def test_handle_facet_for_android(self):
         """Test _handle_facet with android project."""
         template = project_file_gen._read_file_content(
             project_file_gen._TEMPLATE_IML_PATH)
@@ -77,7 +74,7 @@ class AidegenProjectFileGenUnittest(unittest.TestCase):
             self._ANDROID_FACET_SAMPLE)
         self.assertEqual(android_facet, sample_android_facet)
 
-    def test_handle_facet_with_normal_module(self):
+    def test_handle_facet_for_normal(self):
         """Test _handle_facet with normal module."""
         template = project_file_gen._read_file_content(
             project_file_gen._TEMPLATE_IML_PATH)
@@ -132,13 +129,6 @@ class AidegenProjectFileGenUnittest(unittest.TestCase):
             os.remove(iml_path)
             os.remove(dependencies_iml_path)
         self.assertEqual(test_iml, sample_iml)
-        sample_temp_iml = project_file_gen._read_file_content(
-            self._IML_TEMPLEATE_SAMPLE)
-        module_dependency = project_file_gen._handle_module_depend_for_project(
-            self._AOSP_FOLDER, self._JAR_DEP_LIST)
-        sample_temp_iml = sample_temp_iml.replace(
-            project_file_gen._MODULE_DEP_TOKEN + '\n', module_dependency)
-        self.assertEqual(sample_iml, sample_temp_iml)
 
     def test_generate_modules_xml(self):
         """Test _generate_modules_xml."""
@@ -154,15 +144,46 @@ class AidegenProjectFileGenUnittest(unittest.TestCase):
     def test_generate_vcs_xml(self):
         """Test _generate_vcs_xml."""
         try:
+            git_path = os.path.join(self._ANDROID_PROJECT_PATH,
+                                    project_file_gen._GIT_FOLDER_NAME)
+            os.mkdir(git_path)
             project_file_gen._generate_vcs_xml(self._ANDROID_PROJECT_PATH)
             test_vcs = project_file_gen._read_file_content(self._VCS_PATH)
         finally:
             shutil.rmtree(self._IDEA_PATH)
+            shutil.rmtree(git_path)
         sample_vcs = project_file_gen._read_file_content(self._VCS_XML_SAMPLE)
         # The sample must base on the real path.
         sample_vcs = sample_vcs.replace(self._LOCAL_PATH_TOKEN,
                                         self._ANDROID_PROJECT_PATH)
         self.assertEqual(test_vcs, sample_vcs)
+
+    def test_get_uniq_iml_name(self):
+        """Test the unique name cache mechanism.
+
+        By using the path data in module info json as input, if the count of
+        name data set is the same as sub folder path count, then it means
+        there's no duplicated name, the test PASS.
+        """
+        mod_info = module_info.ModuleInfo()
+        test_paths = mod_info._get_path_to_module_info(
+            mod_info.name_to_module_info).keys()
+        print('\n{} {}.'.format('Test_paths length:', len(test_paths)))
+
+        path_list = []
+        for k in test_paths:
+            path_list.append(k)
+        print('{} {}.'.format('path list with length:', len(path_list)))
+
+        names = [project_file_gen.get_unique_iml_name(f) for f in path_list]
+        print('{} {}.'.format('Names list with length:', len(names)))
+
+        self.assertEqual(len(names), len(path_list))
+        dic = {}
+        for i, path in enumerate(path_list):
+            dic[names[i]] = path
+        print('{} {}.'.format('The size of name set is:', len(dic)))
+        self.assertEqual(len(dic), len(path_list))
 
 
 if __name__ == '__main__':

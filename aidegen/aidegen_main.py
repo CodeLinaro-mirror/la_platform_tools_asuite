@@ -41,17 +41,49 @@ from __future__ import absolute_import
 
 import argparse
 import logging
-import os
 import sys
 
-from aidegen import constant
+from aidegen.lib.android_dev_os import AndroidDevOS
+from aidegen.lib.common_util import COLORED_INFO
+from aidegen.lib.common_util import check_modules
 from aidegen.lib.common_util import time_logged
-from aidegen.lib.common_util import get_related_paths
+from aidegen.lib.errors import IDENotExistError
 from aidegen.lib.ide_util import IdeUtil
+from aidegen.lib.metrics import log_usage
 from aidegen.lib.project_file_gen import generate_ide_project_files
 from aidegen.lib.project_info import ProjectInfo
 from aidegen.lib.source_locator import multi_projects_locate_source
 from atest import module_info
+
+AIDEGEN_REPORT_LINK = ('To report the AIDEGen tool problem, please use this '
+                       'link: https://goto.google.com/aidegen-bug')
+_NO_LAUNCH_IDE_CMD = """
+Can not find IDE in path: {}, you can:
+    - add IDE executable to your $PATH
+or  - specify the exact IDE executable path by "aidegen -p"
+or  - specify "aidegen -n" to generate project file only
+"""
+
+_IDE_CACHE_REMINDER_MSG = (
+    'To prevent the existed IDE cache from impacting your IDE dependency '
+    'analysis, please consider to clear IDE caches if necessary. To do that, in'
+    ' IntelliJ IDEA, go to [File > Invalidate Caches / Restart...].')
+
+_SKIP_BUILD_INFO = ('If you are sure the related modules and dependencies have '
+                    'been already built, please try to use command {} to skip '
+                    'the building process.')
+_MAX_TIME = 1
+_SKIP_BUILD_INFO_FUTURE = ''.join([
+    'AIDEGen build time exceeds {} minute(s).\n'.format(_MAX_TIME),
+    _SKIP_BUILD_INFO.rstrip('.'), ' in the future.'
+])
+_SKIP_BUILD_CMD = 'aidegen {} -s'
+_INFO = COLORED_INFO('INFO:')
+_SKIP_MSG = _SKIP_BUILD_INFO_FUTURE.format(
+    COLORED_INFO('aidegen [ module(s) ] -s'))
+_TIME_EXCEED_MSG = '\n{} {}\n'.format(_INFO, _SKIP_MSG)
+_LOG_FORMAT = '%(asctime)s %(filename)s:%(lineno)s:%(levelname)s: %(message)s'
+_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 
 def _parse_args(args):
@@ -77,6 +109,13 @@ def _parse_args(args):
         help=('Android module name or path.'
               'e.g. Settings or packages/apps/Settings'))
     parser.add_argument(
+        '-d',
+        '--depth',
+        type=int,
+        choices=range(10),
+        default=0,
+        help='The depth of module referenced by source.')
+    parser.add_argument(
         '-v',
         '--verbose',
         action='store_true',
@@ -85,12 +124,27 @@ def _parse_args(args):
         '-i',
         '--ide',
         default=['j'],
-        help='Launch IDE type, j: IntelliJ, s: Android Studio.')
+        help='Launch IDE type, j: IntelliJ, s: Android Studio, e: Eclipse.')
     parser.add_argument(
         '-p',
         '--ide-path',
         dest='ide_installed_path',
         help='IDE installed path.')
+    parser.add_argument(
+        '-n', '--no_launch', action='store_true', help='Do not launch IDE.')
+    parser.add_argument(
+        '-r',
+        '--config-reset',
+        dest='config_reset',
+        action='store_true',
+        help='Reset all saved configurations, e.g., preferred IDE version.')
+    parser.add_argument(
+        '-s',
+        '--skip-build',
+        dest='skip_build',
+        action='store_true',
+        help=('Skip building jar or modules that create java files in build '
+              'time, e.g. R/AIDL/Logtags.'))
     return parser.parse_args(args)
 
 
@@ -100,72 +154,46 @@ def _configure_logging(verbose):
     Args:
         verbose: A boolean. If true, display DEBUG level logs.
     """
-    log_format = ('%(asctime)s %(filename)s:%(lineno)s:%(levelname)s: '
-                  '%(message)s')
-    datefmt = '%Y-%m-%d %H:%M:%S'
+    log_format = _LOG_FORMAT
+    datefmt = _DATE_FORMAT
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(level=level, format=log_format, datefmt=datefmt)
 
 
-def _get_modules(atest_module_info, targets):
-    """Get module or project path for Atest to build.
-
-    The rules:
-        1. If the module doesn't exist in android root, sys.exit(1).
-        2. If module is not a directory, sys.exit(1).
-        3. If it contains any build target, return its relative path, else:
-           1) If it's android root, return target, it will build whole tree.
-           2) If none of above, sys.exit(1)
+def _get_ide_util_instance(args):
+    """Get an IdeUtil class instance for launching IDE.
 
     Args:
-        atest_module_info: A ModuleInfo instance contains data of
-                           module-info.json.
-        targets: A list of target modules or project paths from user input, when
-                 locating the target, project with matched module name of the
-                 target has a higher priority than project path. It could be
-                 several cases such as:
-                 1. Module name, e.g. Settings
-                 2. Module path, e.g. packages/apps/Settings
-                 3. Relative path, e.g. ../../packages/apps/Settings
-                 4. Current directory, e.g. . or no argument
+        args: A list of arguments.
 
     Returns:
-        An iterator of correct module names or project paths.
+        A IdeUtil class instance.
     """
-    for target in targets:
-        rel_path, abs_path = get_related_paths(atest_module_info, target)
-        if not abs_path.startswith(constant.ANDROID_ROOT_PATH):
-            logging.error('%s is outside android root.', abs_path)
-            sys.exit(1)
-        if not os.path.isdir(abs_path):
-            logging.error('The path %s doesn\'t exist.', rel_path)
-            sys.exit(1)
-        if has_build_target(atest_module_info, rel_path):
-            yield rel_path
-        else:
-            if abs_path == constant.ANDROID_ROOT_PATH:
-                yield target
-            else:
-                logging.error('No modules defined at %s.', rel_path)
-                sys.exit(1)
+    if args.no_launch:
+        return None
+    ide_util_obj = IdeUtil(args.ide_installed_path, args.ide[0],
+                           args.config_reset,
+                           AndroidDevOS.MAC == AndroidDevOS.get_os_type())
+    if not ide_util_obj.is_ide_installed():
+        err = _NO_LAUNCH_IDE_CMD.format(args.ide_installed_path)
+        logging.error(err)
+        raise IDENotExistError(err)
+    return ide_util_obj
 
 
-def has_build_target(atest_module_info, rel_path):
-    """Determine if a relative path contains buildable module.
+def _check_skip_build(args):
+    """Check if users skip building target, display the warning message.
 
     Args:
-        atest_module_info: A ModuleInfo instance contains data of
-                           module-info.json.
-        rel_path: The module path relative to android root.
-
-    Returns:
-        True if the relative path contains a build target, otherwise false.
+        args: A list of arguments.
     """
-    return any(mod_path.startswith(rel_path)
-               for mod_path in atest_module_info.path_to_module_info)
+    if not args.skip_build:
+        msg = _SKIP_BUILD_INFO.format(
+            COLORED_INFO(_SKIP_BUILD_CMD.format(' '.join(args.targets))))
+        print('\n{} {}\n'.format(_INFO, msg))
 
 
-@time_logged
+@time_logged(message=_TIME_EXCEED_MSG, maximum=_MAX_TIME)
 def main(argv):
     """Main entry.
 
@@ -174,22 +202,25 @@ def main(argv):
     Args:
         argv: A list of system arguments.
     """
+    log_usage()
     args = _parse_args(argv)
     _configure_logging(args.verbose)
+    ide_util_obj = _get_ide_util_instance(args)
+    _check_skip_build(args)
     atest_module_info = module_info.ModuleInfo()
-    args.targets = list(_get_modules(atest_module_info, args.targets))
-    ide_util_obj = IdeUtil(args.ide_installed_path, args.ide[0])
-    if not ide_util_obj.is_ide_installed():
-        logging.error(('Can not find IDE in path: %s, please add it to your '
-                       '$PATH or provide the exact executable IDE script path '
-                       'by "aidegen -p" command.'), args.ide_installed_path)
-        sys.exit(1)
+    check_modules(atest_module_info, args.targets)
     projects = ProjectInfo.generate_projects(atest_module_info, args.targets,
                                              args.verbose)
-    multi_projects_locate_source(projects, args.verbose)
+    multi_projects_locate_source(projects, args.verbose, args.depth,
+                                 args.skip_build)
     generate_ide_project_files(projects)
-    ide_util_obj.launch_ide(projects[0].iml_path)
+    if ide_util_obj:
+        ide_util_obj.launch_ide(projects[0].iml_path)
 
 
-if __name__ == "__main__":
-    main(sys.argv[1:])
+if __name__ == '__main__':
+    try:
+        main(sys.argv[1:])
+    finally:
+        print('\n{} {}\n\n{} {}\n'.format(_INFO, AIDEGEN_REPORT_LINK, _INFO,
+                                          _IDE_CACHE_REMINDER_MSG))

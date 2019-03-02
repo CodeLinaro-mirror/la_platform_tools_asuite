@@ -25,6 +25,7 @@ This module generate IDE project files from templates.
 
 import logging
 import os
+import pathlib
 import shutil
 
 from aidegen import constant
@@ -38,8 +39,8 @@ _SOURCE_FOLDER = ('            <sourceFolder url='
                   '"file://%s" isTestSource="%s" />\n')
 _CONTENT_URL = '        <content url="file://%s">\n'
 _END_CONTENT = '        </content>\n'
-_ORDER_ENTRY = ('        <orderEntry type="module-library"><library>'
-                '<CLASSES><root url="jar://%s!/" /></CLASSES>'
+_ORDER_ENTRY = ('        <orderEntry type="module-library" exported="">'
+                '<library><CLASSES><root url="jar://%s!/" /></CLASSES>'
                 '<JAVADOC /><SOURCES /></library></orderEntry>\n')
 _MODULE_ORDER_ENTRY = ('        <orderEntry type="module" '
                        'module-name="%s" />')
@@ -69,6 +70,71 @@ _COMPILE_XML = 'compiler.xml'
 _MISC_XML = 'misc.xml'
 _ANDROID_MANIFEST = 'AndroidManifest.xml'
 _IML_EXTENSION = '.iml'
+_FRAMEWORK_JAR = os.sep + 'framework.jar'
+_HIGH_PRIORITY_JARS = [_FRAMEWORK_JAR]
+_GIT_FOLDER_NAME = '.git'
+
+# b/121256503: Prevent duplicated iml names from breaking IDEA.
+# Use a map to cache in-using(already used) iml project file names.
+_USED_NAME_CACHE = dict()
+
+
+def get_unique_iml_name(abs_module_path):
+    """Create a unique iml name if needed.
+
+    If the iml name has been used already, prefix it with the
+    parent_sub_folder_name to form a new unique name, and store iml name in
+    _USED_NAME_CACHE as: { abs_module_path:unique_name }.
+
+    Args:
+        abs_module_path: Full module path string.
+
+    Return:
+        String: A unique iml name.
+    """
+    if abs_module_path in _USED_NAME_CACHE:
+        return _USED_NAME_CACHE[abs_module_path]
+
+    uniq_name = abs_module_path.strip(os.sep).split(os.sep)[-1]
+    if any(uniq_name == name for name in _USED_NAME_CACHE.values()):
+        parent_path = os.path.relpath(abs_module_path,
+                                      constant.ANDROID_ROOT_PATH)
+        sub_folders = parent_path.split(os.sep)
+        zero_base_index = len(sub_folders) - 1
+        # Compose the name by following logic. Take ['cts', 'tests', 'ui'] as
+        # an example, if 'ui' is used, then try 'cts_ui', then try
+        # 'cts_tests_ui'. And the worst case is cts_tests_ui, which must be an
+        # unique one.
+        while zero_base_index > 0:
+            uniq_name = '_'.join(
+                [sub_folders[0], '_'.join(sub_folders[zero_base_index:])])
+            zero_base_index = zero_base_index - 1
+            if uniq_name not in _USED_NAME_CACHE.values():
+                break
+    _USED_NAME_CACHE[abs_module_path] = uniq_name
+    logging.debug('Unique name for module path of %s is %s.', abs_module_path,
+                  uniq_name)
+    return uniq_name
+
+
+def _generate_intellij_project_file(project_info, iml_path_list=None):
+    """Generates IntelliJ project files.
+
+    Args:
+        project_info: ProjectInfo instance.
+        iml_path_list: A list of submodule iml paths.
+    """
+    source_dict = dict.fromkeys(
+        list(project_info.source_path['source_folder_path']), False)
+    source_dict.update(
+        dict.fromkeys(list(project_info.source_path['test_folder_path']), True))
+    project_info.iml_path, _ = _generate_iml(
+        constant.ANDROID_ROOT_PATH, project_info.project_absolute_path,
+        source_dict, list(project_info.source_path['jar_path']),
+        project_info.project_relative_path)
+    _generate_modules_xml(project_info.project_absolute_path, iml_path_list)
+    _generate_vcs_xml(project_info.project_absolute_path)
+    _copy_constant_project_files(project_info.project_absolute_path)
 
 
 def generate_ide_project_files(projects):
@@ -83,29 +149,13 @@ def generate_ide_project_files(projects):
     Args:
         projects: A list of ProjectInfo instances.
     """
+    # Initialization
+    _USED_NAME_CACHE.clear()
+
     for project in projects[1:]:
         _generate_intellij_project_file(project)
     iml_paths = [project.iml_path for project in projects[1:]]
-    _generate_intellij_project_file(projects[0],
-                                    iml_paths if iml_paths != [] else None)
-
-
-def _generate_intellij_project_file(project_info, iml_path_list=None):
-    """Generates IntelliJ project files.
-
-    Args:
-        project_info: ProjectInfo instance.
-        iml_path_list: A list of submodule iml paths.
-    """
-    source_dict = dict.fromkeys(
-        list(project_info.source_path['source_folder_path']), False)
-    project_info.iml_path, _ = _generate_iml(
-        constant.ANDROID_ROOT_PATH, project_info.project_absolute_path,
-        source_dict, list(project_info.source_path['jar_path']),
-        project_info.project_relative_path)
-    _generate_modules_xml(project_info.project_absolute_path, iml_path_list)
-    _generate_vcs_xml(project_info.project_absolute_path)
-    _copy_constant_project_files(project_info.project_absolute_path)
+    _generate_intellij_project_file(projects[0], iml_paths or None)
 
 
 def _read_file_content(path):
@@ -195,25 +245,18 @@ def _handle_module_dependency(root_path, content, jar_dependencies):
         String: Content with module dependency handled.
     """
     module_library = ''
-    for jar_path in sorted(jar_dependencies):
+    dependencies = []
+    # Reorder deps in the iml generated by IntelliJ by inserting priority jars.
+    for jar_path in jar_dependencies:
+        if any((jar_path.endswith(high_priority_jar))
+               for high_priority_jar in _HIGH_PRIORITY_JARS):
+            module_library += _ORDER_ENTRY % os.path.join(root_path, jar_path)
+        else:
+            dependencies.append(jar_path)
+
+    for jar_path in dependencies:
         module_library += _ORDER_ENTRY % os.path.join(root_path, jar_path)
     return content.replace(_MODULE_DEP_TOKEN, module_library)
-
-
-def _handle_module_depend_for_project(root_path, jar_dependencies):
-    """Add jar section to project iml as well.
-
-    Args:
-        root_path: Android source tree root path.
-        jar_dependencies: List of the jar path.
-
-    Returns:
-        String: Content with module dependency handled.
-    """
-    module_library = ''
-    for jar_path in sorted(jar_dependencies):
-        module_library += _ORDER_ENTRY % os.path.join(root_path, jar_path)
-    return module_library
 
 
 def _collect_content_url(sorted_path_list):
@@ -339,7 +382,7 @@ def _generate_iml(root_path, module_path, source_dict, jar_dependencies,
     # Separate module and dependencies source folder
     project_source_dict = {}
     for source in list(source_dict):
-        if source.startswith(relative_path):
+        if source == relative_path or source.startswith(relative_path + os.sep):
             is_test = source_dict.get(source)
             source_dict.pop(source)
             project_source_dict.update({source: is_test})
@@ -348,11 +391,13 @@ def _generate_iml(root_path, module_path, source_dict, jar_dependencies,
     module_content = _handle_facet(template, module_path)
     module_content = _handle_source_folder(root_path, module_content,
                                            project_source_dict, True)
-    module_name = module_path.split(os.sep)[-1]
+    # b/121256503: Prevent duplicated iml names from breaking IDEA.
+    module_name = get_unique_iml_name(module_path)
+
     module_iml_path = os.path.join(module_path, module_name + _IML_EXTENSION)
+
     dep_name = _get_dependencies_name(module_name)
-    dep_sect = _handle_module_depend_for_project(root_path, jar_dependencies)
-    dep_sect += _MODULE_ORDER_ENTRY % dep_name
+    dep_sect = _MODULE_ORDER_ENTRY % dep_name
     module_content = module_content.replace(_MODULE_DEP_TOKEN, dep_sect)
     _file_generate(module_iml_path, module_content)
 
@@ -364,6 +409,8 @@ def _generate_iml(root_path, module_path, source_dict, jar_dependencies,
         root_path, dependencies_content, jar_dependencies)
     dependencies_iml_path = os.path.join(module_path, dep_name + _IML_EXTENSION)
     _file_generate(dependencies_iml_path, dependencies_content)
+    logging.debug('Paired iml names are %s, %s', module_iml_path,
+                  dependencies_iml_path)
     return module_iml_path, dependencies_iml_path
 
 
@@ -394,7 +441,10 @@ def _generate_modules_xml(module_path, iml_path_list=None):
         iml_path_list: A list of submodule iml paths.
     """
     content = _read_file_content(_TEMPLATE_MODULES_PATH)
-    module_name = module_path.split(os.sep)[-1]
+
+    # b/121256503: Prevent duplicated iml names from breaking IDEA.
+    module_name = get_unique_iml_name(module_path)
+
     file_name = os.path.splitext(module_name)[0]
     dep_name = _get_dependencies_name(file_name)
     module_list = [
@@ -419,12 +469,19 @@ def _generate_vcs_xml(module_path):
 
     IntelliJ use vcs.xml to record version control software's information.
     Since we are using a single project file, it will only contain the
-    module itself.
+    module itself. If there is no git folder inside, it would find it in
+    parent's folder.
 
     Args:
         module_path: Path of the module.
     """
+    git_path = module_path
+    while not os.path.isdir(os.path.join(git_path, _GIT_FOLDER_NAME)):
+        git_path = str(pathlib.Path(git_path).parent)
+        if git_path == os.sep:
+            logging.warning('%s can\'t find its .git folder', module_path)
+            return
     content = _read_file_content(_TEMPLATE_VCS_PATH)
-    content = content.replace(_VCS_TOKEN, _VCS_SECTION % module_path)
+    content = content.replace(_VCS_TOKEN, _VCS_SECTION % git_path)
     target_path = os.path.join(module_path, _IDEA_FOLDER, _VCS_XML)
     _file_generate(target_path, content)
