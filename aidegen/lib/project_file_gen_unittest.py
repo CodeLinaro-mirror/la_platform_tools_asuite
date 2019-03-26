@@ -38,6 +38,7 @@ class AidegenProjectFileGenUnittest(unittest.TestCase):
     _PROJECT_FACET_SAMPLE = os.path.join(_TEST_DATA_PATH, 'project_facet.iml')
     _MODULE_DEP_SAMPLE = os.path.join(_TEST_DATA_PATH, 'module_dependency.iml')
     _IML_SAMPLE = os.path.join(_TEST_DATA_PATH, 'test.iml')
+    _CLASSPATH_SAMPLE = os.path.join(_TEST_DATA_PATH, 'eclipse.classpath')
     _DEPENDENCIES_IML_SAMPLE = os.path.join(_TEST_DATA_PATH, 'dependencies.iml')
     _MODULE_XML_SAMPLE = os.path.join(_TEST_DATA_PATH, 'modules.xml')
     _VCS_XML_SAMPLE = os.path.join(_TEST_DATA_PATH, 'vcs.xml')
@@ -184,6 +185,41 @@ class AidegenProjectFileGenUnittest(unittest.TestCase):
             dic[names[i]] = path
         print('{} {}.'.format('The size of name set is:', len(dic)))
         self.assertEqual(len(dic), len(path_list))
+
+    def test_copy_project_files(self):
+        """Test _copy_constant_project_files."""
+        project_file_gen._copy_constant_project_files(
+            self._ANDROID_PROJECT_PATH)
+        self.assertTrue(
+            os.path.isfile(
+                os.path.join(self._IDEA_PATH,
+                             project_file_gen._CODE_STYLE_FOLDER,
+                             'codeStyleConfig.xml')))
+        self.assertTrue(
+            os.path.isfile(
+                os.path.join(self._IDEA_PATH,
+                             project_file_gen._COPYRIGHT_FOLDER,
+                             'Apache_2.xml')))
+        self.assertTrue(
+            os.path.isfile(
+                os.path.join(self._IDEA_PATH,
+                             project_file_gen._COPYRIGHT_FOLDER,
+                             'profiles_settings.xml')))
+        shutil.rmtree(self._IDEA_PATH)
+
+    def test_generate_classpath(self):
+        """Test _generate_classpath."""
+        try:
+            classpath = project_file_gen._generate_classpath(
+                self._ANDROID_PROJECT_PATH,
+                copy.deepcopy(list(sorted(self._ANDROID_SOURCE_DICT))),
+                self._JAR_DEP_LIST)
+            test_iml = project_file_gen._read_file_content(classpath)
+            sample_iml = project_file_gen._read_file_content(
+                self._CLASSPATH_SAMPLE)
+        finally:
+            os.remove(classpath)
+        self.assertEqual(test_iml, sample_iml)
 
 
 if __name__ == '__main__':

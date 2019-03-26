@@ -66,6 +66,7 @@ _TEMPLATE_VCS_PATH = os.path.join(_IDEA_DIR, _VCS_XML)
 _DEPENDENCIES = 'dependencies'
 _DEPENDENCIES_IML = 'dependencies.iml'
 _COPYRIGHT_FOLDER = 'copyright'
+_CODE_STYLE_FOLDER = 'codeStyles'
 _COMPILE_XML = 'compiler.xml'
 _MISC_XML = 'misc.xml'
 _ANDROID_MANIFEST = 'AndroidManifest.xml'
@@ -73,6 +74,19 @@ _IML_EXTENSION = '.iml'
 _FRAMEWORK_JAR = os.sep + 'framework.jar'
 _HIGH_PRIORITY_JARS = [_FRAMEWORK_JAR]
 _GIT_FOLDER_NAME = '.git'
+_CODE_STYLE_REL_PATH = 'tools/asuite/aidegen/data/AndroidStyle_aidegen.xml'
+_CODE_STYLE_SRC_PATH = os.path.join(constant.ANDROID_ROOT_PATH,
+                                    _CODE_STYLE_REL_PATH)
+_ECLIP = 'eclipse'
+_ECLIP_SRC_ENTRY = ('<classpathentry exported="true" kind="src" path="{}"/>\n')
+_ECLIP_LIB_ENTRY = ('<classpathentry exported="true" kind="lib" path="{}"/>\n')
+_ECLIP_TEMPLATE_PATH = os.path.join(_ROOT_DIR, 'templates/eclipse/eclipse.xml')
+_ECLIP_EXTENSION = '.classpath'
+_ECLIP_SRC_TOKEN = '@SRC@'
+_ECLIP_LIB_TOKEN = '@LIB@'
+_ECLIP_PROJECT_PATH = os.path.join(_ROOT_DIR, 'templates/eclipse/project.xml')
+_ECLIP_PROJECT_NAME_TOKEN = '@PROJECTNAME@'
+_ECLIP_PROJECT_EXTENSION = '.project'
 
 # b/121256503: Prevent duplicated iml names from breaking IDEA.
 # Use a map to cache in-using(already used) iml project file names.
@@ -118,7 +132,7 @@ def get_unique_iml_name(abs_module_path):
 
 
 def _generate_intellij_project_file(project_info, iml_path_list=None):
-    """Generates IntelliJ project files.
+    """Generates IntelliJ project file.
 
     Args:
         project_info: ProjectInfo instance.
@@ -158,6 +172,34 @@ def generate_ide_project_files(projects):
     _generate_intellij_project_file(projects[0], iml_paths or None)
 
 
+def _generate_eclipse_project_file(project_info):
+    """Generates Eclipse project file.
+
+    Args:
+        project_info: ProjectInfo instance.
+    """
+    module_path = project_info.project_absolute_path
+    module_name = get_unique_iml_name(module_path)
+    _generate_eclipse_project(module_name, module_path)
+    source_dict = dict.fromkeys(
+        list(project_info.source_path['source_folder_path']), False)
+    source_dict.update(
+        dict.fromkeys(list(project_info.source_path['test_folder_path']), True))
+    project_info.iml_path = _generate_classpath(
+        project_info.project_absolute_path, list(sorted(source_dict)),
+        list(project_info.source_path['jar_path']))
+
+
+def generate_eclipse_project_files(projects):
+    """Generate Eclipse project files by a list of ProjectInfo instances.
+
+    Args:
+        projects: A list of ProjectInfo instances.
+    """
+    for project in projects:
+        _generate_eclipse_project_file(project)
+
+
 def _read_file_content(path):
     """Read file's content.
 
@@ -187,22 +229,27 @@ def _file_generate(path, content):
 def _copy_constant_project_files(target_path):
     """Copy project files to target path with error handling.
 
-    This function would copy compiler.xml, misc.xml and copyright folder
-    to target folder. Since these files aren't mandatory in IntelliJ, it
-    only logs when an IOError occurred.
+    This function would copy compiler.xml, misc.xml, codeStyles folder and
+    copyright folder to target folder. Since these files aren't mandatory in
+    IntelliJ, it only logs when an IOError occurred.
 
     Args:
         target_path: Path of target file.
     """
-    target_copyright_path = os.path.join(target_path, _IDEA_FOLDER,
-                                         _COPYRIGHT_FOLDER)
     try:
-        # Existing copyright folder needs to be removed first.
-        # Otherwise it would raise IOError.
-        if os.path.exists(target_copyright_path):
-            shutil.rmtree(target_copyright_path)
-        shutil.copytree(
-            os.path.join(_IDEA_DIR, _COPYRIGHT_FOLDER), target_copyright_path)
+        _copy_to_idea_folder(target_path, _COPYRIGHT_FOLDER)
+        _copy_to_idea_folder(target_path, _CODE_STYLE_FOLDER)
+        code_style_target_path = os.path.join(target_path, _IDEA_FOLDER,
+                                              _CODE_STYLE_FOLDER, 'Project.xml')
+        # Base on current working directory to prepare the relevant location
+        # of the symbolic link file, and base on the symlink file location to
+        # prepare the relevant code style source path.
+        rel_target = os.path.relpath(code_style_target_path, os.getcwd())
+        rel_source = os.path.relpath(_CODE_STYLE_SRC_PATH,
+                                     os.path.dirname(code_style_target_path))
+        logging.debug('Relative target symlink path: %s.', rel_target)
+        logging.debug('Relative code style source path: %s.', rel_source)
+        os.symlink(rel_source, rel_target)
         shutil.copy(
             os.path.join(_IDEA_DIR, _COMPILE_XML),
             os.path.join(target_path, _IDEA_FOLDER, _COMPILE_XML))
@@ -212,6 +259,21 @@ def _copy_constant_project_files(target_path):
     except IOError as err:
         logging.warning('%s can\'t copy the project files\n %s', target_path,
                         err)
+
+
+def _copy_to_idea_folder(target_path, folder_name):
+    """Copy folder to project .idea path.
+
+    Args:
+        target_path: Path of target folder.
+        folder_name: Name of target folder.
+    """
+    target_folder_path = os.path.join(target_path, _IDEA_FOLDER, folder_name)
+    # Existing folder needs to be removed first, otherwise it will raise
+    # IOError.
+    if os.path.exists(target_folder_path):
+        shutil.rmtree(target_folder_path)
+    shutil.copytree(os.path.join(_IDEA_DIR, folder_name), target_folder_path)
 
 
 def _handle_facet(content, path):
@@ -412,6 +474,45 @@ def _generate_iml(root_path, module_path, source_dict, jar_dependencies,
     logging.debug('Paired iml names are %s, %s', module_iml_path,
                   dependencies_iml_path)
     return module_iml_path, dependencies_iml_path
+
+
+def _generate_classpath(module_path, source_list, jar_dependencies):
+    """Generate .classpath file.
+
+    Args:
+        module_path: Absolute path of the module.
+        source_list: A list of sources path.
+        jar_dependencies: List of the jar path.
+
+    Returns:
+        String: The absolute paths of .classpath.
+    """
+    template = _read_file_content(_ECLIP_TEMPLATE_PATH)
+
+    src_list = [_ECLIP_SRC_ENTRY.format(s) for s in source_list]
+    template = template.replace(_ECLIP_SRC_TOKEN, ''.join(src_list))
+
+    lib_list = [_ECLIP_LIB_ENTRY.format(j) for j in jar_dependencies]
+    template = template.replace(_ECLIP_LIB_TOKEN, ''.join(lib_list))
+
+    classpath_path = os.path.join(module_path, _ECLIP_EXTENSION)
+
+    _file_generate(classpath_path, template)
+
+    return classpath_path
+
+
+def _generate_eclipse_project(project_name, module_path):
+    """Generate .project file of Eclipse.
+
+    Args:
+        project_name: A string of the project name.
+        module_path: Absolute path of the module.
+    """
+    template = _read_file_content(_ECLIP_PROJECT_PATH)
+    template = template.replace(_ECLIP_PROJECT_NAME_TOKEN, project_name)
+    eclipse_project = os.path.join(module_path, _ECLIP_PROJECT_EXTENSION)
+    _file_generate(eclipse_project, template)
 
 
 def _get_dependencies_name(module_name):
