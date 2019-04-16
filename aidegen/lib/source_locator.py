@@ -39,7 +39,8 @@ _JAR = '.jar'
 _TARGET_LIBS = [_JAR]
 _JARJAR_RULES_FILE = 'jarjar-rules.txt'
 _JAVA = '.java'
-_TARGET_FILES = [_JAVA]
+_KOTLIN = '.kt'
+_TARGET_FILES = [_JAVA, _KOTLIN]
 _KEY_INSTALLED = 'installed'
 _KEY_JARJAR_RULES = 'jarjar_rules'
 _KEY_JARS = 'jars'
@@ -293,7 +294,7 @@ class ModuleData():
                 src_item = os.path.relpath(src_item)
                 if src_item.endswith(_SRCJAR):
                     self._append_jar_from_installed(self.specific_soong_path)
-                elif src_item.endswith(_JAVA):
+                elif common_util.is_target(src_item, _TARGET_FILES):
                     # Only scan one java file in each source directories.
                     src_item_dir = os.path.dirname(src_item)
                     if src_item_dir not in scanned_dirs:
@@ -301,7 +302,7 @@ class ModuleData():
                         src_dir = self._get_source_folder(src_item)
                 else:
                     # To record what files except java and srcjar in the srcs.
-                    logging.info('%s is not in parsing scope.', src_item)
+                    logging.debug('%s is not in parsing scope.', src_item)
                 if src_dir:
                     self._add_to_source_or_test_dirs(src_dir)
 
