@@ -40,7 +40,6 @@ from aidegen.lib import errors
 from atest import constants
 
 _BLUEPRINT_JSONFILE_NAME = 'module_bp_java_deps.json'
-_BLUEPRINT_JSONFILE_OUTDIR = 'out/soong/'
 _KEY_CLS = 'class'
 _KEY_PATH = 'path'
 _KEY_INS = 'installed'
@@ -56,7 +55,7 @@ _GENERATE_JSON_COMMAND = ('SOONG_COLLECT_JAVA_DEPS=false make nothing;'
 
 
 @time_logged
-def generate_module_info_json(module_info, projects, verbose):
+def generate_module_info_json(module_info, projects, verbose, skip_build=False):
     """Generate a merged json dictionary.
 
     Change directory to ANDROID_ROOT_PATH before making _GENERATE_JSON_COMMAND
@@ -72,19 +71,22 @@ def generate_module_info_json(module_info, projects, verbose):
         module_info: A ModuleInfo instance contains data of module-info.json.
         projects: A list of project names.
         verbose: A boolean, if true displays full build output.
+        skip_build: A boolean, if true skip building _BLUEPRINT_JSONFILE_NAME if
+                    it exists, otherwise build it.
 
     Returns:
         A tuple of Atest module info instance and a merged json dictionary.
     """
     cwd = os.getcwd()
     os.chdir(constant.ANDROID_ROOT_PATH)
-    _build_target([_GENERATE_JSON_COMMAND], projects[0], module_info, verbose)
+    _build_target([_GENERATE_JSON_COMMAND], projects[0], module_info, verbose,
+                  skip_build)
     os.chdir(cwd)
     bp_dict = _get_soong_build_json_dict()
     return _merge_json(module_info.name_to_module_info, bp_dict)
 
 
-def _build_target(cmd, main_project, module_info, verbose):
+def _build_target(cmd, main_project, module_info, verbose, skip_build=False):
     """Make nothing to generate module_bp_java_deps.json.
 
     We build without environment setting SOONG_COLLECT_JAVA_DEPS and then build
@@ -97,6 +99,8 @@ def _build_target(cmd, main_project, module_info, verbose):
         main_project: The main project name.
         module_info: A ModuleInfo instance contains data of module-info.json.
         verbose: A boolean, if true displays full build output.
+        skip_build: A boolean, if true skip building _BLUEPRINT_JSONFILE_NAME if
+                    it exists, otherwise build it.
 
     Build results:
         1. Build successfully return.
@@ -110,6 +114,10 @@ def _build_target(cmd, main_project, module_info, verbose):
     json_path = _get_blueprint_json_path()
     original_json_mtime = None
     if os.path.isfile(json_path):
+        if skip_build:
+            logging.info('%s file exists, skipping build.',
+                         _BLUEPRINT_JSONFILE_NAME)
+            return
         original_json_mtime = os.path.getmtime(json_path)
     try:
         if verbose:
@@ -122,8 +130,8 @@ def _build_target(cmd, main_project, module_info, verbose):
     except subprocess.CalledProcessError:
         if not _is_new_json_file_generated(json_path, original_json_mtime):
             if os.path.isfile(json_path):
-                message = ('Generate new {} failed, AIDEGen will proceed and '
-                           'reuse the old {}.'.format(json_path, json_path))
+                message = ('Generate new {0} failed, AIDEGen will proceed and '
+                           'reuse the old {0}.'.format(json_path))
                 print('\n{} {}\n'.format(COLORED_INFO('Warning:'), message))
         else:
             _, main_project_path = get_related_paths(module_info, main_project)
@@ -191,7 +199,7 @@ def _get_blueprint_json_path():
     """
     return os.path.join(
         os.environ.get(constants.ANDROID_BUILD_TOP),
-        _BLUEPRINT_JSONFILE_OUTDIR, _BLUEPRINT_JSONFILE_NAME)
+        constant.BLUEPRINT_JSONFILE_OUTDIR, _BLUEPRINT_JSONFILE_NAME)
 
 
 def _merge_module_keys(m_dict, b_dict):
