@@ -30,8 +30,6 @@ from aidegen.lib import source_locator
 
 from atest import atest_utils
 
-_ANDROID_MK = 'Android.mk'
-_ANDROID_BP = 'Android.bp'
 _CONVERT_MK_URL = ('https://android.googlesource.com/platform/build/soong/'
                    '#convert-android_mk-files')
 _ANDROID_MK_WARN = (
@@ -61,7 +59,7 @@ class ProjectInfo:
     Users should call config_project first before starting using ProjectInfo.
 
     Class attributes:
-        modules_info: A AidegenModuleInfo instance whose name_to_module_info is
+        modules_info: An AidegenModuleInfo instance whose name_to_module_info is
                       combining module-info.json with module_bp_java_deps.json.
 
     Attributes:
@@ -105,14 +103,15 @@ class ProjectInfo:
             is_main_project: A boolean, default is False. True if the target is
                              the main project, otherwise False.
         """
-        rel_path, abs_path = common_util.get_related_paths(self.modules_info,
-                                                           target)
+        rel_path, abs_path = common_util.get_related_paths(
+            self.modules_info, target)
         self.module_name = self._get_target_name(target, abs_path)
         self.is_main_project = is_main_project
         self.project_module_names = set(
             self.modules_info.get_module_names(rel_path))
         self.project_relative_path = rel_path
         self.project_absolute_path = abs_path
+        self.git_path = ''
         self.iml_path = ''
         self._set_default_modues()
         self._init_source_path()
@@ -163,18 +162,17 @@ class ProjectInfo:
         Yields:
             A string: the relative path of Android.mk.
         """
-        android_mk = os.path.join(self.project_absolute_path, _ANDROID_MK)
-        android_bp = os.path.join(self.project_absolute_path, _ANDROID_BP)
-        if os.path.isfile(android_mk) and not os.path.isfile(android_bp):
-            yield '\t' + os.path.join(self.project_relative_path, _ANDROID_MK)
+        if (common_util.exist_android_mk(self.project_absolute_path) and
+                not common_util.exist_android_bp(self.project_absolute_path)):
+            yield '\t' + os.path.join(self.project_relative_path,
+                                      constant.ANDROID_MK)
         for mod_name in self.dep_modules:
             rel_path, abs_path = common_util.get_related_paths(
                 self.modules_info, mod_name)
             if rel_path and abs_path:
-                mod_mk = os.path.join(abs_path, _ANDROID_MK)
-                mod_bp = os.path.join(abs_path, _ANDROID_BP)
-                if os.path.isfile(mod_mk) and not os.path.isfile(mod_bp):
-                    yield '\t' + os.path.join(rel_path, _ANDROID_MK)
+                if (common_util.exist_android_mk(abs_path)
+                        and not common_util.exist_android_bp(abs_path)):
+                    yield '\t' + os.path.join(rel_path, constant.ANDROID_MK)
 
     def _get_modules_under_project_path(self, rel_path):
         """Find modules under the rel_path.
@@ -191,7 +189,8 @@ class ProjectInfo:
                      constant.TARGET_CLASSES, rel_path)
         modules = set()
         for name, data in self.modules_info.name_to_module_info.items():
-            if common_util.is_project_path_relative_module(data, rel_path):
+            if module_info.AidegenModuleInfo.is_project_path_relative_module(
+                    data, rel_path):
                 if module_info.AidegenModuleInfo.is_target_module(data):
                     modules.add(name)
                 else:
@@ -212,7 +211,7 @@ class ProjectInfo:
         """
         for module in modules:
             if self.modules_info.is_robolectric_test(module):
-                return set([_ROBOLECTRIC_MODULE])
+                return {_ROBOLECTRIC_MODULE}
         return set()
 
     def _filter_out_modules(self):
@@ -256,8 +255,9 @@ class ProjectInfo:
         children = set()
         if not module_names:
             module_names = self.project_module_names
-            module_names.update(self._get_modules_under_project_path(
-                self.project_relative_path))
+            module_names.update(
+                self._get_modules_under_project_path(
+                    self.project_relative_path))
             module_names.update(self._get_robolectric_dep_module(module_names))
             self.project_module_names = set()
         for name in module_names:
@@ -308,7 +308,7 @@ class ProjectInfo:
             return os.path.basename(abs_path)
         return target
 
-    def locate_source(self):
+    def locate_source(self, build=True):
         """Locate the paths of dependent source folders and jar files.
 
         Try to reference source folder path as dependent module unless the
@@ -332,6 +332,10 @@ class ProjectInfo:
                     },
                 }
 
+        Args:
+            build: A boolean default to true. If false, skip building jar and
+                   srcjar files, otherwise build them.
+
         Example usage:
             project.source_path = project.locate_source()
             E.g.
@@ -354,13 +358,16 @@ class ProjectInfo:
             self.source_path['r_java_path'].update(module.r_java_paths)
             self.source_path['srcjar_path'].update(module.srcjar_paths)
             self._append_jars_as_dependencies(module)
+            rebuild_targets.update(module.build_targets)
+        if project_config.ProjectConfig.get_instance().is_skip_build:
+            return
         if rebuild_targets:
-            if not project_config.ProjectConfig.get_instance().is_skip_build:
+            if build:
                 verbose = project_config.ProjectConfig.get_instance().verbose
                 _batch_build_dependencies(verbose, rebuild_targets)
-                self.locate_source()
+                self.locate_source(build=False)
             else:
-                logging.warning('Jar or srcjar files build failed:\n\t%s.',
+                logging.warning('Jar or srcjar files build skipped:\n\t%s.',
                                 '\n\t'.join(rebuild_targets))
 
     def _generate_moduledata(self, module_name, module_data):

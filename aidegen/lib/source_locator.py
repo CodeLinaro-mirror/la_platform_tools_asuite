@@ -25,6 +25,7 @@ import re
 
 from aidegen import constant
 from aidegen.lib import common_util
+from aidegen.lib import module_info
 
 # Parse package name from the package declaration line of a java.
 # Group matches "foo.bar" of line "package foo.bar;" or "package foo.bar"
@@ -41,14 +42,15 @@ _KEY_JARJAR_RULES = 'jarjar_rules'
 _KEY_JARS = 'jars'
 _KEY_TESTS = 'tests'
 _NAME_AAPT2 = 'aapt2'
-_TARGET_R_JAR = 'R.jar'
+_TARGET_R_SRCJAR = 'R.srcjar'
 _TARGET_AAPT2_SRCJAR = _NAME_AAPT2 + _SRCJAR_EXT
-_TARGET_BUILD_FILES = [_TARGET_AAPT2_SRCJAR, _TARGET_R_JAR]
+_TARGET_BUILD_FILES = [_TARGET_AAPT2_SRCJAR, _TARGET_R_SRCJAR]
 _IGNORE_DIRS = [
     # The java files under this directory have to be ignored because it will
     # cause duplicated classes by libcore/ojluni/src/main/java.
     'libcore/ojluni/src/lambda/java'
 ]
+_ANDROID = 'android'
 
 
 class ModuleData:
@@ -137,18 +139,18 @@ class ModuleData:
     def _collect_r_srcs_paths(self):
         """Collect the source folder of R.java.
 
-        Check if the path of aapt2.srcjar or R.jar exists, which is the value of
-        key "srcjars" in module_data. If the path of both 2 cases doesn't exist,
+        Check if the path of aapt2.srcjar or R.srcjar exists, these are both the
+        values of key "srcjars" in module_data. If neither of the cases exists,
         build it onto an intermediates directory.
 
         For IntelliJ, we can set the srcjar file as a source root for
         dependency. For Eclipse, we still use the R folder as dependencies until
         we figure out how to set srcjar file as dependency.
-        # TODO(b/135594800): Set aapt2.srcjar or R.jar as a dependency in
+        # TODO(b/135594800): Set aapt2.srcjar or R.srcjar as a dependency in
                              Eclipse.
         """
-        if (self._is_app_module() and self._is_target_module() and
-                self._check_key(constant.KEY_SRCJARS)):
+        if (self._is_app_module() and self._is_target_module()
+                and self._check_key(constant.KEY_SRCJARS)):
             for srcjar in self.module_data[constant.KEY_SRCJARS]:
                 if not os.path.exists(common_util.get_abs_path(srcjar)):
                     self.build_targets.add(srcjar)
@@ -160,15 +162,16 @@ class ModuleData:
     def _collect_srcjar_path(self, srcjar):
         """Collect the source folders from a srcjar path.
 
-        Set the aapt2.srcjar or R.jar as source root:
+        Set the aapt2.srcjar or R.srcjar as source root:
         Case aapt2.srcjar:
             The source path string is
             out/.../Bluetooth_intermediates/aapt2.srcjar
             The source content descriptor is
             out/.../Bluetooth_intermediates/aapt2.srcjar!/.
-        Case R.jar:
-            The source path string is out/soong/.../gen/R.jar.
-            The source content descriptor is out/soong/.../gen/R.jar!/.
+        Case R.srcjar:
+            The source path string is out/soong/.../gen/android/R.srcjar.
+            The source content descriptor is
+            out/soong/.../gen/android/R.srcjar!/.
 
         Args:
             srcjar: A file path string relative to ANDROID_BUILD_TOP, the build
@@ -196,19 +199,29 @@ class ModuleData:
     def _get_r_dir(srcjar):
         """Get the source folder of R.java for Eclipse.
 
+        Get the folder contains the R.java of aapt2.srcjar or R.srcjar:
+        Case aapt2.srcjar:
+            If the relative path of the aapt2.srcjar is a/b/aapt2.srcjar, the
+            source root of the R.java is a/b/aapt2
+        Case R.srcjar:
+            If the relative path of the R.srcjar is a/b/android/R.srcjar, the
+            source root of the R.java is a/b/aapt2/R
+
         Args:
             srcjar: A file path string, the build target of the module to
                     generate R.java.
 
         Returns:
             A relative source folder path string, and return None if the target
-            file name is not aapt2.srcjar or R.jar.
+            file name is not aapt2.srcjar or R.srcjar.
         """
         target_folder, target_file = os.path.split(srcjar)
+        base_dirname = os.path.basename(target_folder)
         if target_file == _TARGET_AAPT2_SRCJAR:
             return os.path.join(target_folder, _NAME_AAPT2)
-        if target_file == _TARGET_R_JAR:
-            return os.path.join(target_folder, _NAME_AAPT2, 'R')
+        if target_file == _TARGET_R_SRCJAR and base_dirname == _ANDROID:
+            return os.path.join(os.path.dirname(target_folder),
+                                _NAME_AAPT2, 'R')
         return None
 
     def _init_module_path(self):
@@ -253,16 +266,14 @@ class ModuleData:
             for src_item in self.module_data[constant.KEY_SRCS]:
                 src_dir = None
                 src_item = os.path.relpath(src_item)
-                if src_item.endswith(_SRCJAR_EXT):
-                    self._append_jar_from_installed(self.specific_soong_path)
-                elif common_util.is_target(src_item, _TARGET_FILES):
+                if common_util.is_target(src_item, _TARGET_FILES):
                     # Only scan one java file in each source directories.
                     src_item_dir = os.path.dirname(src_item)
                     if src_item_dir not in scanned_dirs:
                         scanned_dirs.add(src_item_dir)
                         src_dir = self._get_source_folder(src_item)
                 else:
-                    # To record what files except java and srcjar in the srcs.
+                    # To record what files except java and kt in the srcs.
                     logging.debug('%s is not in parsing scope.', src_item)
                 if src_dir:
                     self._add_to_source_or_test_dirs(src_dir)
@@ -372,7 +383,7 @@ class ModuleData:
             package_name: A string of package name.
         """
         package_name = None
-        with open(abs_java_path, encoding="utf8") as data:
+        with open(abs_java_path, encoding='utf8') as data:
             for line in data.read().splitlines():
                 match = _PACKAGE_RE.match(line)
                 if match:
@@ -430,6 +441,10 @@ class ModuleData:
         directly. There is only jar file name in self.module_data['jars'], it
         has to be combined with self.module_data['path'] to append into
         self.jar_files.
+        Once the file doesn't exist, it's not assumed to be a prebuilt jar so
+        that we can ignore it.
+        # TODO(b/141959125): Collect the correct prebuilt jar files by jdeps.go.
+
         For example:
         'asm-6.0': {
             'jars': [
@@ -453,7 +468,8 @@ class ModuleData:
                         rel_path = self._get_jar_path_from_prebuilts(jar_name)
                         if rel_path:
                             jar_path = rel_path
-                    self._append_jar_file(jar_path)
+                    if os.path.exists(common_util.get_abs_path(jar_path)):
+                        self._append_jar_file(jar_path)
 
     @staticmethod
     def _get_jar_path_from_prebuilts(jar_name):
@@ -559,8 +575,9 @@ class EclipseModuleData(ModuleData):
             project_relpath: A string stands for the project's relative path.
         """
         super().__init__(module_name, module_data, depth=0)
-        self.is_project = common_util.is_project_path_relative_module(
+        related = module_info.AidegenModuleInfo.is_project_path_relative_module(
             module_data, project_relpath)
+        self.is_project = related
 
     def locate_sources_path(self):
         """Locate source folders' paths or jar files.
@@ -572,8 +589,8 @@ class EclipseModuleData(ModuleData):
             self._locate_project_source_path()
         else:
             self._locate_jar_path()
-        if self.referenced_by_jar and self.missing_jars:
-            self.build_targets |= self.missing_jars
+        self._collect_classes_jars()
+        self._collect_missing_jars()
 
     def _locate_project_source_path(self):
         """Locate the source folder paths of the project module.

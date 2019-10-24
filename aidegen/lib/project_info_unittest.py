@@ -16,7 +16,6 @@
 
 """Unittests for project_info."""
 
-import collections
 import os
 import shutil
 import tempfile
@@ -95,6 +94,15 @@ class ProjectInfoUnittests(unittest.TestCase):
         self.args = mock.MagicMock()
         self.args.module_name = 'm1'
         self.args.project_path = ''
+        self.args.ide = ['j']
+        self.args.no_launch = True
+        self.args.depth = 0
+        self.args.android_tree = False
+        self.args.skip_build = True
+        self.args.targets = ['m1']
+        self.args.verbose = False
+        self.args.ide_installed_path = None
+        self.args.config_reset = False
 
     @mock.patch('atest.module_info.ModuleInfo')
     def test_get_dep_modules(self, mock_module_info):
@@ -135,9 +143,6 @@ class ProjectInfoUnittests(unittest.TestCase):
         generated_jar = ('out/soong/.intermediates/packages/apps/test/test/'
                          'android_common/generated.jar')
         locate_module_info = dict(unittest_constants.MODULE_INFO)
-        locate_module_info['srcs'].extend(
-            [('out/soong/.intermediates/packages/apps/test/test/android_common/'
-              'gen/test.srcjar')])
         locate_module_info['installed'] = [generated_jar]
         mock_module_info.is_module.return_value = True
         mock_module_info.get_paths.return_value = [
@@ -146,12 +151,7 @@ class ProjectInfoUnittests(unittest.TestCase):
         mock_module_info.get_module_names.return_value = [
             unittest_constants.TEST_MODULE
         ]
-        Args = collections.namedtuple(
-            'Args',
-            'no_launch depth ide skip_build android_tree targets verbose')
-        args = Args(True, 0, ['j'], True, False,
-                    [unittest_constants.TEST_MODULE], False)
-        project_info.ProjectInfo.config = project_config.ProjectConfig(args)
+        project_config.ProjectConfig(self.args)
         project_info_obj = project_info.ProjectInfo(mock_module_info)
         project_info_obj.dep_modules = {
             unittest_constants.TEST_MODULE: locate_module_info
@@ -162,17 +162,6 @@ class ProjectInfoUnittests(unittest.TestCase):
         project_info_obj.locate_source()
         self.assertEqual(project_info_obj.source_path['jar_path'], result_jar)
 
-        # Test on jar exists.
-        jar_abspath = os.path.join(test_root_path, generated_jar)
-        result_jar = set([generated_jar])
-        try:
-            open(jar_abspath, 'w').close()
-            project_info_obj.locate_source()
-            self.assertEqual(project_info_obj.source_path['jar_path'],
-                             result_jar)
-        finally:
-            shutil.rmtree(test_root_path)
-
         # Test collects source and test folders.
         result_source = set(['packages/apps/test/src/main/java'])
         result_test = set(['packages/apps/test/tests'])
@@ -180,13 +169,6 @@ class ProjectInfoUnittests(unittest.TestCase):
                          result_source)
         self.assertEqual(project_info_obj.source_path['test_folder_path'],
                          result_test)
-
-        # Test loading jar from dependencies parameter.
-        default_jar = os.path.join(unittest_constants.MODULE_PATH, 'test.jar')
-        locate_module_info['dependencies'] = [default_jar]
-        result_jar = set([generated_jar, default_jar])
-        project_info_obj.locate_source()
-        self.assertEqual(project_info_obj.source_path['jar_path'], result_jar)
 
     def test_separate_build_target(self):
         """Test separate_build_target."""
@@ -197,6 +179,18 @@ class ProjectInfoUnittests(unittest.TestCase):
                 project_info._separate_build_targets(test_list, 9)):
             target.append(test_list[start:end])
         self.assertEqual(target, sample)
+
+    @mock.patch.object(project_info.ProjectInfo, 'locate_source')
+    @mock.patch('atest.module_info.ModuleInfo')
+    def test_rebuild_jar_once(self, mock_module_info, mock_locate_source):
+        """Test rebuild the jar/srcjar only one time."""
+        mock_module_info.get_paths.return_value = ['m1']
+        project_info.ProjectInfo.modules_info = mock_module_info
+        proj_info = project_info.ProjectInfo(self.args.module_name, False)
+        proj_info.locate_source(build=False)
+        self.assertEqual(mock_locate_source.call_count, 1)
+        proj_info.locate_source(build=True)
+        self.assertEqual(mock_locate_source.call_count, 2)
 
 
 if __name__ == '__main__':
