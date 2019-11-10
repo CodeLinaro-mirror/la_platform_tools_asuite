@@ -15,10 +15,68 @@
  */
 package com.android.atest.toolWindow;
 
+import com.android.atest.AtestUtils;
 import com.intellij.openapi.wm.ToolWindow;
+
+import javax.swing.*;
 
 /** UI content of Atest tool window. */
 public class AtestToolWindow {
 
-    public AtestToolWindow(ToolWindow toolWindow) {}
+    private JPanel mAtestToolWindowPanel;
+    private JScrollPane mScorll;
+    private JTextArea mAtestOutput;
+    private JLabel mAtestlabel;
+    private JTextField mLunchTarget;
+    private JCheckBox mRunOnHost;
+    private JCheckBox mTestMapping;
+    private JCheckBox mSkipBuild;
+    private JButton mRunButton;
+    private JComboBox mTestTarget;
+
+    /**
+     * Initializes AtestToolWindow with ToolWindow and Project.
+     *
+     * @param toolWindow a child window of the IDE used to display information.
+     * @param basePath a string that represents current project's base path.
+     */
+    public AtestToolWindow(ToolWindow toolWindow, String basePath) {
+        setmTestTarget(basePath);
+    }
+
+    /**
+     * Initializes mTestTarget.
+     *
+     * @param basePath a string that represents current project's base path.
+     */
+    private void setmTestTarget(String basePath) {
+        mTestTarget.setEditable(true);
+        if (AtestUtils.hasTestMapping(basePath)) {
+            mTestTarget.setSelectedItem(basePath);
+        }
+    }
+
+    /**
+     * Sets the Atest running output to the output area.
+     *
+     * @param text the output string.
+     */
+    public void setmAtestOutput(String text) {
+        mAtestOutput.setText(text);
+    }
+
+    /** Scrolls the output window scroll bar to the bottom. */
+    public void scrollToEnd() {
+        JScrollBar vertical = mScorll.getVerticalScrollBar();
+        vertical.setValue(vertical.getMaximum());
+    }
+
+    /**
+     * Gets the UI panel of Atest tool window.
+     *
+     * @return the JPanel of Atest tool window.
+     */
+    public JPanel getContent() {
+        return mAtestToolWindowPanel;
+    }
 }
