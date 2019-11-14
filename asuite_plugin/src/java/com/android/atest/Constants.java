@@ -19,4 +19,5 @@ package com.android.atest;
 public class Constants {
 
     public static final String ATEST_NAME = "Atest";
+    public static final String TEST_MAPPING_FILE_NAME = "TEST_MAPPING";
 }
