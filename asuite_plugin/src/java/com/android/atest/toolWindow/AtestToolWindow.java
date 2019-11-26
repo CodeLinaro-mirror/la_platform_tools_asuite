@@ -16,13 +16,18 @@
 package com.android.atest.toolWindow;
 
 import com.android.atest.AtestUtils;
+import com.android.atest.commandAdapter.CommandRunner;
 import com.intellij.openapi.wm.ToolWindow;
+import com.intellij.openapi.wm.ex.ToolWindowEx;
+import org.jetbrains.annotations.NotNull;
 
 import javax.swing.*;
+import java.awt.*;
 
 /** UI content of Atest tool window. */
 public class AtestToolWindow {
 
+    private static final int INITIAL_WIDTH = 1000;
     private JPanel mAtestToolWindowPanel;
     private JScrollPane mScorll;
     private JTextArea mAtestOutput;
@@ -41,7 +46,10 @@ public class AtestToolWindow {
      * @param basePath a string that represents current project's base path.
      */
     public AtestToolWindow(ToolWindow toolWindow, String basePath) {
-        setmTestTarget(basePath);
+        setInitialWidth((ToolWindowEx) toolWindow);
+        setRunButton(basePath);
+        setTestTarget(basePath);
+        mAtestOutput.setMargin(new Insets(0, 10, 0, 0));
     }
 
     /**
@@ -49,10 +57,22 @@ public class AtestToolWindow {
      *
      * @param basePath a string that represents current project's base path.
      */
-    private void setmTestTarget(String basePath) {
+    private void setTestTarget(String basePath) {
         mTestTarget.setEditable(true);
         if (AtestUtils.hasTestMapping(basePath)) {
             mTestTarget.setSelectedItem(basePath);
+        }
+    }
+
+    /**
+     * Sets the initial width of the tool window.
+     *
+     * @param toolWindowEx a toolWindow which has more methods.
+     */
+    private void setInitialWidth(@NotNull ToolWindowEx toolWindowEx) {
+        int width = toolWindowEx.getComponent().getWidth();
+        if (width < INITIAL_WIDTH) {
+            toolWindowEx.stretchWidth(INITIAL_WIDTH - width);
         }
     }
 
@@ -61,14 +81,40 @@ public class AtestToolWindow {
      *
      * @param text the output string.
      */
-    public void setmAtestOutput(String text) {
+    public void setAtestOutput(String text) {
         mAtestOutput.setText(text);
+    }
+
+    /** Initializes the run button. */
+    private void setRunButton(String basePath) {
+        // When command running, the run button will be set to disable, then the focus will set to
+        // next object. Set run button not focusable to prevent it.
+        mRunButton.setFocusable(false);
+        mRunButton.addActionListener(
+                e -> {
+                    CommandRunner runner =
+                            new CommandRunner(
+                                    mLunchTarget.getText(),
+                                    mTestTarget.getEditor().getItem().toString(),
+                                    AtestUtils.getAndroidRoot(basePath),
+                                    AtestToolWindow.this);
+                    runner.run();
+                });
     }
 
     /** Scrolls the output window scroll bar to the bottom. */
     public void scrollToEnd() {
         JScrollBar vertical = mScorll.getVerticalScrollBar();
         vertical.setValue(vertical.getMaximum());
+    }
+
+    /**
+     * Enables (or disables) the run button.
+     *
+     * @param isEnable true to enable the run button, otherwise disable it.
+     */
+    public void setRunEnable(boolean isEnable) {
+        mRunButton.setEnabled(isEnable);
     }
 
     /**
