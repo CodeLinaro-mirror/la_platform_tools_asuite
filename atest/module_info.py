@@ -16,6 +16,8 @@
 Module Info class used to hold cached module-info.json.
 """
 
+# pylint: disable=line-too-long
+
 import json
 import logging
 import os
@@ -27,7 +29,7 @@ import constants
 _MODULE_INFO = 'module-info.json'
 
 
-class ModuleInfo(object):
+class ModuleInfo:
     """Class that offers fast/easy lookup for Module related details."""
 
     def __init__(self, force_build=False, module_file=None):
@@ -67,7 +69,7 @@ class ModuleInfo(object):
         # Check if the user set a custom out directory by comparing the out_dir
         # to the root_dir.
         if out_dir.find(root_dir) == 0:
-            # Make target is simply file path relative to root
+            # Make target is simply file path no-absolute to root
             module_info_target = os.path.relpath(module_file_path, root_dir)
         else:
             # If the user has set a custom out directory, generate an absolute
@@ -83,8 +85,8 @@ class ModuleInfo(object):
             build_env.update(constants.DEPS_LICENSE_ENV)
             # Also build the deps-license module to generate dependencies data.
             atest_utils.build([module_info_target, constants.DEPS_LICENSE],
-                              verbose=logging.getLogger().isEnabledFor(logging.DEBUG),
-                              env_vars=build_env)
+                              verbose=logging.getLogger().isEnabledFor(
+                                  logging.DEBUG), env_vars=build_env)
         return module_info_target, module_file_path
 
     def _load_module_info_file(self, force_build, module_file):
@@ -221,7 +223,8 @@ class ModuleInfo(object):
         A module can have a test config in the following manner:
           - AndroidTest.xml at the module path.
           - test_config be set in module-info.json.
-          - Auto-generated config via the auto_test_config key in module-info.json.
+          - Auto-generated config via the auto_test_config key
+            in module-info.json.
 
         Args:
             mod_info: Dict of module info to check.

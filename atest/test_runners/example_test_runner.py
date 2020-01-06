@@ -12,12 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Example test runner class.
-"""
+"""Example test runner class."""
 
-# pylint: disable=import-error
-import test_runner_base
+
+from test_runners import test_runner_base
 
 
 class ExampleTestRunner(test_runner_base.TestRunnerBase):
@@ -27,6 +25,7 @@ class ExampleTestRunner(test_runner_base.TestRunnerBase):
     _RUN_CMD = '{exe} ExampleTestRunner - test:{test}'
     _BUILD_REQ = set()
 
+    # pylint: disable=unused-argument
     def run_tests(self, test_infos, extra_args, reporter):
         """Run the list of test_infos.
 
@@ -39,6 +38,8 @@ class ExampleTestRunner(test_runner_base.TestRunnerBase):
         for run_cmd in run_cmds:
             super(ExampleTestRunner, self).run(run_cmd)
 
+    # pylint: disable=unnecessary-pass
+    # Please keep above disable flag to ensure host_env_check is overriden.
     def host_env_check(self):
         """Check that host env has everything we need.
 

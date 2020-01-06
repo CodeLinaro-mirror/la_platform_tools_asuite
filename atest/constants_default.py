@@ -16,6 +16,8 @@
 Various globals used by atest.
 """
 
+# pylint: disable=line-too-long
+
 import os
 import re
 
@@ -59,6 +61,7 @@ EXIT_CODE_ERROR = 3
 EXIT_CODE_TEST_NOT_FOUND = 4
 EXIT_CODE_TEST_FAILURE = 5
 EXIT_CODE_VERIFY_FAILURE = 6
+EXIT_CODE_OUTSIDE_ROOT = 7
 
 # Codes of specific events. These are exceptions that don't stop anything
 # but sending metrics.
@@ -120,13 +123,12 @@ TF_SKIP_LOADING_CONFIG_JAR = '--skip-loading-config-jar'
 # Suite Plans
 SUITE_PLANS = frozenset(['cts'])
 
-# Constants used for AtestArgParser
-HELP_DESC = 'Build, install and run Android tests locally.'
+# Constants of Steps
+REBUILD_MODULE_INFO_FLAG = '--rebuild-module-info'
 BUILD_STEP = 'build'
 INSTALL_STEP = 'install'
 TEST_STEP = 'test'
 ALL_STEPS = [BUILD_STEP, INSTALL_STEP, TEST_STEP]
-REBUILD_MODULE_INFO_FLAG = '--rebuild-module-info'
 
 # ANSI code shift for colorful print
 BLACK, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE = range(8)

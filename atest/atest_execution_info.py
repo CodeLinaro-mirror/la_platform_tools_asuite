@@ -11,9 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-ATest execution info generator.
-"""
+
+"""ATest execution info generator."""
+
+# pylint: disable=line-too-long
 
 from __future__ import print_function
 
@@ -59,7 +60,7 @@ def preparation_time(start_time):
     return PREPARE_END_TIME - start_time if PREPARE_END_TIME else None
 
 
-class AtestExecutionInfo(object):
+class AtestExecutionInfo:
     """Class that stores the whole test progress information in JSON format.
 
     ----
@@ -152,7 +153,7 @@ class AtestExecutionInfo(object):
                 AtestExecutionInfo.result_reporters)
             return json.dumps(info_dict)
         except ValueError as err:
-            logging.warn('Parsing test result failed due to : %s', err)
+            logging.warning('Parsing test result failed due to : %s', err)
 
     @staticmethod
     def _arrange_test_result(info_dict, reporters):
@@ -182,7 +183,8 @@ class AtestExecutionInfo(object):
         info_dict[_TEST_RUNNER_KEY] = {}
         for reporter in reporters:
             for test in reporter.all_test_results:
-                runner = info_dict[_TEST_RUNNER_KEY].setdefault(test.runner_name, {})
+                runner = info_dict[_TEST_RUNNER_KEY].setdefault(
+                    test.runner_name, {})
                 group = runner.setdefault(test.group_name, {})
                 result_dict = {_TEST_NAME_KEY : test.test_name,
                                _TEST_TIME_KEY : test.test_time,

@@ -16,13 +16,15 @@
 Module Finder class.
 """
 
+# pylint: disable=line-too-long
+
 import logging
 import os
 
-# pylint: disable=import-error
 import atest_error
 import atest_utils
 import constants
+
 from test_finders import test_info
 from test_finders import test_finder_base
 from test_finders import test_finder_utils
@@ -103,7 +105,7 @@ class ModuleFinder(test_finder_base.TestFinderBase):
         # The out dir is used to construct the build targets for the test deps.
         out_dir = os.environ.get(constants.ANDROID_HOST_OUT)
         custom_out_dir = os.environ.get(constants.ANDROID_OUT_DIR)
-        # If we're not an absolute custom out dir, get relative out dir path.
+        # If we're not an absolute custom out dir, get no-absolute out dir path.
         if custom_out_dir is None or not os.path.isabs(custom_out_dir):
             out_dir = os.path.relpath(out_dir, self.root_dir)
         vts_out_dir = os.path.join(out_dir, 'vts', 'android-vts', 'testcases')
@@ -159,7 +161,7 @@ class ModuleFinder(test_finder_base.TestFinderBase):
         # Check if this is only a vts module.
         if self._is_vts_module(test.test_name):
             return self._update_to_vts_test_info(test)
-        elif self.module_info.is_robolectric_test(test.test_name):
+        if self.module_info.is_robolectric_test(test.test_name):
             return self._update_to_robolectric_test_info(test)
         rel_config = test.data[constants.TI_REL_CONFIG]
         test.build_targets = self._get_build_targets(module_name, rel_config)
@@ -216,7 +218,7 @@ class ModuleFinder(test_finder_base.TestFinderBase):
         Args:
             path: A string of the test's path.
             methods: A set of method name strings.
-            rel_module_dir: Optional. A string of the module dir relative to
+            rel_module_dir: Optional. A string of the module dir no-absolute to
                 root.
             class_name: Optional. A string of the class name.
             is_native_test: Optional. A boolean variable of whether to search
@@ -266,13 +268,13 @@ class ModuleFinder(test_finder_base.TestFinderBase):
         return ti_filter
 
     def _get_rel_config(self, test_path):
-        """Get config file's relative path.
+        """Get config file's no-absolute path.
 
         Args:
             test_path: A string of the test absolute path.
 
         Returns:
-            A string of config's relative path, else None.
+            A string of config's no-absolute path, else None.
         """
         test_dir = os.path.dirname(test_path)
         rel_module_dir = test_finder_utils.find_parent_module_dir(
@@ -336,7 +338,8 @@ class ModuleFinder(test_finder_base.TestFinderBase):
             # path is a list with only 1 element.
             rel_config = os.path.join(mod_info['path'][0],
                                       constants.MODULE_CONFIG)
-            rel_config = self._get_module_test_config(module_name, rel_config=rel_config)
+            rel_config = self._get_module_test_config(module_name,
+                                                      rel_config=rel_config)
             tinfo = self._process_test_info(test_info.TestInfo(
                 test_name=module_name,
                 test_runner=self._TEST_RUNNER,
@@ -359,7 +362,7 @@ class ModuleFinder(test_finder_base.TestFinderBase):
         Args:
             class_name: A string of the test's class name.
             module_name: Optional. A string of the module name to use.
-            rel_config: Optional. A string of module dir relative to repo root.
+            rel_config: Optional. A string of module dir no-absolute to repo root.
             is_native_test: A boolean variable of whether to search for a
             native test or not.
 
@@ -529,7 +532,7 @@ class ModuleFinder(test_finder_base.TestFinderBase):
         Args:
             class_name: A string of the test's class name.
             module_name: Optional. A string of the module name to use.
-            rel_config: Optional. A string of module dir relative to repo root.
+            rel_config: Optional. A string of module dir no-absolute to repo root.
 
         Returns:
             A list of populated TestInfo namedtuple if test found, else None.
@@ -561,9 +564,10 @@ class ModuleFinder(test_finder_base.TestFinderBase):
 
         Args:
             user_input: A string of the user input.
-            ld_range: An integer that range the searching scope. If the length of
-                      user_input is 10, then Atest will calculate modules of which
-                      length is between 8 and 12. 0 is equivalent to unlimited.
+            ld_range: An integer that range the searching scope. If the length
+                      of user_input is 10, then Atest will calculate modules of
+                      which length is between 8 and 12. 0 is equivalent to
+                      unlimited.
 
         Returns:
             A List of LDs and possible module names. If the user_input is "fax",
@@ -575,7 +579,8 @@ class ModuleFinder(test_finder_base.TestFinderBase):
         """
         atest_utils.colorful_print('\nSearching for similar module names using '
                                    'fuzzy search...', constants.CYAN)
-        testable_modules = sorted(self.module_info.get_testable_modules(), key=len)
+        testable_modules = sorted(self.module_info.get_testable_modules(),
+                                  key=len)
         lower_bound = len(user_input) - ld_range
         upper_bound = len(user_input) + ld_range
         testable_modules_with_ld = []
@@ -584,7 +589,7 @@ class ModuleFinder(test_finder_base.TestFinderBase):
             if ld_range != 0:
                 if len(module_name) < lower_bound:
                     continue
-                elif len(module_name) > upper_bound:
+                if len(module_name) > upper_bound:
                     break
             testable_modules_with_ld.append(
                 [test_finder_utils.get_levenshtein_distance(
@@ -600,8 +605,8 @@ class ModuleFinder(test_finder_base.TestFinderBase):
         Return:
             A list of guessed modules.
         """
-        modules_with_ld = self.get_testable_modules_with_ld(user_input,
-                                                            ld_range=constants.LD_RANGE)
+        modules_with_ld = self.get_testable_modules_with_ld(
+            user_input, ld_range=constants.LD_RANGE)
         guessed_modules = []
         for _distance, _module in modules_with_ld:
             if _distance <= abs(constants.LD_RANGE):

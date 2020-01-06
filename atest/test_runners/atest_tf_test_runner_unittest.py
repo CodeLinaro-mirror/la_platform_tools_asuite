@@ -16,25 +16,24 @@
 
 """Unittests for atest_tf_test_runner."""
 
+# pylint: disable=line-too-long
+
 import os
 import sys
 import tempfile
 import unittest
 import json
-import mock
 
-# pylint: disable=import-error
+from io import StringIO
+from unittest import mock
+
 import constants
 import unittest_constants as uc
 import unittest_utils
-import atest_tf_test_runner as atf_tr
 import event_handler
-from test_finders import test_info
 
-if sys.version_info[0] == 2:
-    from StringIO import StringIO
-else:
-    from io import StringIO
+from test_finders import test_info
+from test_runners import atest_tf_test_runner as atf_tr
 
 #pylint: disable=protected-access
 #pylint: disable=invalid-name
@@ -200,7 +199,7 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
         mock_subproc = mock.Mock()
         mock_run.return_value = mock_subproc
         mock_subproc.returncode = 0
-        mock_subproc.poll.side_effect = [True, None]
+        mock_subproc.poll.side_effect = [True, True, None]
         mock_server = mock.Mock()
         mock_server.getsockname.return_value = ('', '')
         mock_start_socket_server.return_value = mock_server
@@ -240,15 +239,20 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
         mock_server.accept.side_effect = [(mock_conn1, 'addr 1'),
                                           (mock_conn2, 'addr 2')]
         mock_select.side_effect = [([mock_server], None, None),
+                                   ([mock_server], None, None),
+                                   ([mock_conn1], None, None),
+                                   ([mock_conn2], None, None),
                                    ([mock_conn1], None, None),
                                    ([mock_conn2], None, None)]
-        mock_subproc.poll.side_effect = [None, None, True]
+        mock_process.side_effect = ['abc', 'def', False, False]
+        mock_subproc.poll.side_effect = [None, None, None, None,
+                                         None, True]
         self.tr._start_monitor(mock_server, mock_subproc, mock_reporter)
-        self.assertEqual(mock_process.call_count, 2)
+        self.assertEqual(mock_process.call_count, 4)
         calls = [mock.call.accept(), mock.call.close()]
         mock_server.assert_has_calls(calls)
         mock_conn1.assert_has_calls([mock.call.close()])
-        mock_conn1.assert_has_calls([mock.call.close()])
+        mock_conn2.assert_has_calls([mock.call.close()])
 
     @mock.patch.object(atf_tr.AtestTradefedTestRunner, '_process_connection')
     @mock.patch('select.select')
@@ -264,22 +268,28 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
         mock_server.accept.side_effect = [(mock_conn1, 'addr 1'),
                                           (mock_conn2, 'addr 2')]
         mock_select.side_effect = [([mock_server], None, None),
+                                   ([mock_server], None, None),
+                                   ([mock_conn1], None, None),
+                                   ([mock_conn2], None, None),
                                    ([mock_conn1], None, None),
                                    ([mock_conn2], None, None)]
-        mock_subproc.poll.side_effect = [None, True]
+        mock_process.side_effect = ['abc', 'def', False, False]
+        # TF exit early but have not processed data in socket buffer.
+        mock_subproc.poll.side_effect = [None, None, True, True,
+                                         True, True]
         self.tr._start_monitor(mock_server, mock_subproc, mock_reporter)
-        self.assertEqual(mock_process.call_count, 1)
+        self.assertEqual(mock_process.call_count, 4)
         calls = [mock.call.accept(), mock.call.close()]
         mock_server.assert_has_calls(calls)
         mock_conn1.assert_has_calls([mock.call.close()])
-        mock_conn1.assert_has_calls([mock.call.close()])
+        mock_conn2.assert_has_calls([mock.call.close()])
 
 
     def test_start_socket_server(self):
         """Test start_socket_server method."""
         server = self.tr._start_socket_server()
         host, port = server.getsockname()
-        self.assertEquals(host, atf_tr.SOCKET_HOST)
+        self.assertEqual(host, atf_tr.SOCKET_HOST)
         self.assertLessEqual(port, 65535)
         self.assertGreaterEqual(port, 1024)
         server.close()
@@ -300,7 +310,7 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
         mock_exist.return_value = False
         mock_key.return_value = ''
         self.tr._try_set_gts_authentication_key()
-        self.assertEquals(os.environ.get('APE_API_KEY'), None)
+        self.assertEqual(os.environ.get('APE_API_KEY'), None)
 
     @mock.patch.object(event_handler.EventHandler, 'process_event')
     def test_process_connection(self, mock_pe):
@@ -332,7 +342,7 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
 
     @mock.patch.object(event_handler.EventHandler, 'process_event')
     def test_process_connection_with_buffering(self, mock_pe):
-        """Test _process_connection when events overflow socket buffer size"""
+        """Test _process_connection when events overflow socket buffer size."""
         mock_socket = mock.Mock()
         module_events = [EVENTS_NORMAL[0], EVENTS_NORMAL[-1]]
         socket_events = ['%s %s' % (name, json.dumps(data))
@@ -349,6 +359,19 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
         self.tr._process_connection(datas, mock_socket, mock_pe)
         self.tr._process_connection(datas, mock_socket, mock_pe)
         calls = [mock.call.process_event(name, data) for name, data in module_events]
+        mock_pe.assert_has_calls(calls)
+
+    @mock.patch.object(event_handler.EventHandler, 'process_event')
+    def test_process_connection_with_not_completed_event_data(self, mock_pe):
+        """Test _process_connection when event have \n prefix."""
+        mock_socket = mock.Mock()
+        mock_socket.recv.return_value = ('\n%s %s'
+                                         %(EVENTS_NORMAL[0][0],
+                                           json.dumps(EVENTS_NORMAL[0][1])))
+        datas = {mock_socket: ''}
+        self.tr._process_connection(datas, mock_socket, mock_pe)
+        calls = [mock.call.process_event(EVENTS_NORMAL[0][0],
+                                         EVENTS_NORMAL[0][1])]
         mock_pe.assert_has_calls(calls)
 
     @mock.patch('os.environ.get', return_value=None)

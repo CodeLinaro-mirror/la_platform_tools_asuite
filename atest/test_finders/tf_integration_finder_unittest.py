@@ -16,14 +16,17 @@
 
 """Unittests for tf_integration_finder."""
 
+# pylint: disable=line-too-long
+
 import os
 import unittest
-import mock
 
-# pylint: disable=import-error
+from unittest import mock
+
 import constants
 import unittest_constants as uc
 import unittest_utils
+
 from test_finders import test_finder_utils
 from test_finders import test_info
 from test_finders import tf_integration_finder

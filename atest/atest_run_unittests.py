@@ -13,12 +13,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Main entrypoint for all of atest's unittest."""
+
+# pylint: disable=line-too-long
 
 import logging
 import os
 import sys
 import unittest
+
 from importlib import import_module
 
 # Setup logging to be silent so unittests can pass through TF.
@@ -27,7 +31,7 @@ logging.disable(logging.ERROR)
 def get_test_modules():
     """Returns a list of testable modules.
 
-    Finds all the test files (*_unittest.py) and get their relative
+    Finds all the test files (*_unittest.py) and get their no-absolute
     path (internal/lib/utils_test.py) and translate it to an import path and
     strip the py ext (internal.lib.utils_test).
 
@@ -40,7 +44,7 @@ def get_test_modules():
     for dirpath, _, files in os.walk(base_path):
         for f in files:
             if f.endswith("_unittest.py"):
-                # Now transform it into a relative import path.
+                # Now transform it into a no-absolute import path.
                 full_file_path = os.path.join(dirpath, f)
                 rel_file_path = os.path.relpath(full_file_path, base_path)
                 rel_file_path, _ = os.path.splitext(rel_file_path)

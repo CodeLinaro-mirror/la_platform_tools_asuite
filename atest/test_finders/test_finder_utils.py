@@ -16,7 +16,10 @@
 Utils for finder classes.
 """
 
+# pylint: disable=line-too-long
+
 from __future__ import print_function
+
 import logging
 import multiprocessing
 import os
@@ -26,7 +29,6 @@ import subprocess
 import time
 import xml.etree.ElementTree as ET
 
-# pylint: disable=import-error
 import atest_decorator
 import atest_error
 import atest_enum
@@ -45,7 +47,8 @@ _CC_CLASS_RE = re.compile(r'^[ ]*TEST(_F|_P)?[ ]*\(', re.I)
 _JAVA_METHODS_PATTERN = r'.*[ ]+({0})\(.*'
 # RE for checking if there exists one of the methods in cc file.
 _CC_METHODS_PATTERN = r'^[ ]*TEST(_F|_P)?[ ]*\(.*,[ ]*({0})\).*'
-# Parse package name from the package declaration line of a java or a kotlin file.
+# Parse package name from the package declaration line of a java or
+# a kotlin file.
 # Group matches "foo.bar" of line "package foo.bar;" or "package foo.bar"
 _PACKAGE_RE = re.compile(r'\s*package\s+(?P<package>[^(;|\s)]+)\s*', re.I)
 # Matches install paths in module_info to install location(host or device).
@@ -62,8 +65,11 @@ _DEVICE_PATH_RE = re.compile(r'.*\/target\/.*', re.I)
 # 3. INTEGRATION: XML file name in one of the 4 integration config directories.
 # 4. CC_CLASS: Name of a cc class.
 
-FIND_REFERENCE_TYPE = atest_enum.AtestEnum(['CLASS', 'QUALIFIED_CLASS',
-                                            'PACKAGE', 'INTEGRATION', 'CC_CLASS'])
+FIND_REFERENCE_TYPE = atest_enum.AtestEnum(['CLASS',
+                                            'QUALIFIED_CLASS',
+                                            'PACKAGE',
+                                            'INTEGRATION',
+                                            'CC_CLASS'])
 # Get cpu count.
 _CPU_COUNT = 0 if os.uname()[0] == 'Linux' else multiprocessing.cpu_count()
 
@@ -85,7 +91,8 @@ FIND_CMDS = {
     FIND_REFERENCE_TYPE.CC_CLASS: r"find {0} {1} -type f -print"
                                   r"| egrep -i '/*test.*\.(cc|cpp)$'"
                                   r"| xargs -P" + str(_CPU_COUNT) +
-                                  r" egrep -sH '^[ ]*TEST(_F|_P)?[ ]*\({2}' || true"
+                                  r" egrep -sH '^[ ]*TEST(_F|_P)?[ ]*\({2}' "
+                                  " || true"
 }
 
 # Map ref_type with its index file.
@@ -156,7 +163,7 @@ def split_methods(user_input):
     parts = user_input.split('#')
     if len(parts) == 1:
         return parts[0], frozenset()
-    elif len(parts) == 2:
+    if len(parts) == 2:
         return parts[0], frozenset(parts[1].split(','))
     raise atest_error.TooManyMethodsError(
         'Too many methods specified with # character in user input: %s.'
@@ -315,11 +322,10 @@ def extract_test_from_tests(tests):
         numbered_list = ['%s: %s' % (i, t) for i, t in enumerate(tests)]
         numbered_list.append('%s: All' % count)
         print('Multiple tests found:\n{0}'.format('\n'.join(numbered_list)))
-        test_indices = raw_input("Please enter numbers of test to use. "
-                                 "If none of above option matched, keep "
-                                 "searching for other possible tests."
-                                 "\n(multiple selection is supported,"
-                                 " e.g. '1' or '0,1' or '0-2'): ")
+        test_indices = input("Please enter numbers of test to use. If none of "
+                             "above option matched, keep searching for other "
+                             "possible tests.\n(multiple selection is supported, "
+                             "e.g. '1' or '0,1' or '0-2'): ")
         for idx in re.sub(r'(\s)', '', test_indices).split(','):
             indices = idx.split('-')
             len_indices = len(indices)
@@ -327,7 +333,7 @@ def extract_test_from_tests(tests):
                 start_index = min(int(indices[0]), int(indices[len_indices-1]))
                 end_index = max(int(indices[0]), int(indices[len_indices-1]))
                 # One of input is 'All', return all options.
-                if start_index == count or end_index == count:
+                if count in (start_index, end_index):
                     return tests
                 mtests.update(tests[start_index:(end_index+1)])
     except (ValueError, IndexError, AttributeError, TypeError) as err:
@@ -519,8 +525,9 @@ def find_parent_module_dir(root_dir, start_dir, module_info):
                     return rel_dir
             if mod.get('auto_test_config'):
                 auto_gen_dir = rel_dir
-                # Don't return for auto_gen, keep checking for real config, because
-                # common in cts for class in apk that's in hostside test setup.
+                # Don't return for auto_gen, keep checking for real config,
+                # because common in cts for class in apk that's in hostside
+                # test setup.
         current_dir = os.path.dirname(current_dir)
     return auto_gen_dir
 
@@ -784,8 +791,10 @@ def get_targets_from_vts_xml(xml_file, rel_out_dir, module_info):
             # If the config specified append-bitness, append the bits suffixes
             # to the target.
             if _specified_bitness(xml_root):
-                targets.add(os.path.join(rel_out_dir, push_target + _VTS_BITNESS_32))
-                targets.add(os.path.join(rel_out_dir, push_target + _VTS_BITNESS_64))
+                targets.add(os.path.join(
+                    rel_out_dir, push_target + _VTS_BITNESS_32))
+                targets.add(os.path.join(
+                    rel_out_dir, push_target + _VTS_BITNESS_64))
             else:
                 targets.add(os.path.join(rel_out_dir, push_target))
         elif name == _VTS_TEST_FILE:
@@ -885,12 +894,12 @@ def get_int_dir_from_path(path, int_dirs):
             int_dir = abs_int_dir
             break
     if not file_name:
-        logging.warn('Found dir (%s) matching input (%s).'
-                     ' Referencing an entire Integration/Suite dir'
-                     ' is not supported. If you are trying to reference'
-                     ' a test by its path, please input the path to'
-                     ' the integration/suite config file itself.',
-                     int_dir, path)
+        logging.warning('Found dir (%s) matching input (%s).'
+                        ' Referencing an entire Integration/Suite dir'
+                        ' is not supported. If you are trying to reference'
+                        ' a test by its path, please input the path to'
+                        ' the integration/suite config file itself.',
+                        int_dir, path)
         return None
     return int_dir
 
@@ -914,7 +923,8 @@ def get_install_locations(installed_paths):
     return install_locations
 
 
-def get_levenshtein_distance(test_name, module_name, dir_costs=constants.COST_TYPO):
+def get_levenshtein_distance(test_name, module_name,
+                             dir_costs=constants.COST_TYPO):
     """Return an edit distance between test_name and module_name.
 
     Levenshtein Distance has 3 actions: delete, insert and replace.

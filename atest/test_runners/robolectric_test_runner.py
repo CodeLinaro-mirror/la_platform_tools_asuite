@@ -19,6 +19,8 @@ This test runner will be short lived, once robolectric support v2 is in, then
 robolectric tests will be invoked through AtestTFTestRunner.
 """
 
+# pylint: disable=line-too-long
+
 import json
 import logging
 import os
@@ -28,12 +30,11 @@ import time
 
 from functools import partial
 
-# pylint: disable=import-error
 import atest_utils
 import constants
 
-from event_handler import EventHandler
 from test_runners import test_runner_base
+from .event_handler import EventHandler
 
 POLL_FREQ_SECS = 0.1
 # A pattern to match event like below
@@ -122,20 +123,23 @@ class RobolectricTestRunner(test_runner_base.TestRunnerBase):
                                    env_vars=full_env_vars)
                 event_handler = EventHandler(reporter, self.NAME)
                 # Start polling.
-                self.handle_subprocess(subproc, partial(self._exec_with_robo_polling,
-                                                        event_file,
-                                                        subproc,
-                                                        event_handler))
+                self.handle_subprocess(subproc,
+                                       partial(self._exec_with_robo_polling,
+                                               event_file,
+                                               subproc,
+                                               event_handler))
                 ret_code |= self.wait_for_subprocess(subproc)
         return ret_code
 
-    def _get_full_build_environ(self, test_info=None, extra_args=None, event_file=None):
+    def _get_full_build_environ(self, test_info=None, extra_args=None,
+                                event_file=None):
         """Helper to get full build environment.
 
        Args:
            test_info: TestInfo object.
            extra_args: Dict of extra args to add to test run.
-           event_file: A file-like object that can be used as a temporary storage area.
+           event_file: A file-like object that can be used as a temporary
+                       storage area.
        """
         full_env_vars = os.environ.copy()
         env_vars = self.generate_env_vars(test_info,
@@ -144,7 +148,8 @@ class RobolectricTestRunner(test_runner_base.TestRunnerBase):
         full_env_vars.update(env_vars)
         return full_env_vars
 
-    def _exec_with_robo_polling(self, communication_file, robo_proc, event_handler):
+    def _exec_with_robo_polling(self, communication_file, robo_proc,
+                                event_handler):
         """Polling data from communication file
 
         Polling data from communication file. Exit when communication file
@@ -194,7 +199,8 @@ class RobolectricTestRunner(test_runner_base.TestRunnerBase):
         Args:
             test_info: TestInfo class that holds the class filter info.
             extra_args: Dict of extra args to apply for test run.
-            event_file: A file-like object storing the events of robolectric tests.
+            event_file: A file-like object storing the events of robolectric
+            tests.
 
         Returns:
             Dict of env vars to pass into invocation.
@@ -215,6 +221,8 @@ class RobolectricTestRunner(test_runner_base.TestRunnerBase):
             env_var['EVENT_FILE_ROBOLECTRIC'] = event_file.name
         return env_var
 
+    # pylint: disable=unnecessary-pass
+    # Please keep above disable flag to ensure host_env_check is overriden.
     def host_env_check(self):
         """Check that host env has everything we need.
 

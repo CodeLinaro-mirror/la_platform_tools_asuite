@@ -23,6 +23,8 @@ code base and executing the tests via the TradeFederation test harness.
 atest is designed to support any test types that can be ran by TradeFederation.
 """
 
+# pylint: disable=line-too-long
+
 from __future__ import print_function
 
 import logging
@@ -40,7 +42,6 @@ import atest_execution_info
 import atest_utils
 import bug_detector
 import cli_translator
-# pylint: disable=import-error
 import constants
 import module_info
 import result_reporter
@@ -127,9 +128,11 @@ def _configure_logging(verbose):
     log_format = '%(asctime)s %(filename)s:%(lineno)s:%(levelname)s: %(message)s'
     datefmt = '%Y-%m-%d %H:%M:%S'
     if verbose:
-        logging.basicConfig(level=logging.DEBUG, format=log_format, datefmt=datefmt)
+        logging.basicConfig(level=logging.DEBUG,
+                            format=log_format, datefmt=datefmt)
     else:
-        logging.basicConfig(level=logging.INFO, format=log_format, datefmt=datefmt)
+        logging.basicConfig(level=logging.INFO,
+                            format=log_format, datefmt=datefmt)
 
 
 def _missing_environment_variables():
@@ -155,7 +158,8 @@ def make_test_run_dir():
     if not os.path.exists(constants.ATEST_RESULT_ROOT):
         os.makedirs(constants.ATEST_RESULT_ROOT)
     ctime = time.strftime(TEST_RUN_DIR_PREFIX, time.localtime())
-    return tempfile.mkdtemp(prefix='%s_' % ctime, dir=constants.ATEST_RESULT_ROOT)
+    return tempfile.mkdtemp(prefix='%s_' % ctime,
+                            dir=constants.ATEST_RESULT_ROOT)
 
 
 def get_extra_args(args):
@@ -279,7 +283,8 @@ def _validate_tm_tests_exec_mode(args, test_infos):
 def _will_run_tests(args):
     """Determine if there are tests to run.
 
-    Currently only used by detect_regression to skip the test if just running regression detection.
+    Currently only used by detect_regression to skip the test if just running
+    regression detection.
 
     Args:
         args: parsed args object.
@@ -290,6 +295,8 @@ def _will_run_tests(args):
     return not (args.detect_regression and len(args.detect_regression) == 2)
 
 
+# pylint: disable=no-else-return
+# This method is going to dispose, let's ignore pylint for now.
 def _has_valid_regression_detection_args(args):
     """Validate regression detection args.
 
@@ -300,21 +307,24 @@ def _has_valid_regression_detection_args(args):
         True if args are valid
     """
     if args.generate_baseline and args.generate_new_metrics:
-        logging.error('Cannot collect both baseline and new metrics at the same time.')
+        logging.error('Cannot collect both baseline and new metrics'
+                      'at the same time.')
         return False
     if args.detect_regression is not None:
         if not args.detect_regression:
-            logging.error('Need to specify at least 1 arg for regression detection.')
+            logging.error('Need to specify at least 1 arg for'
+                          ' regression detection.')
             return False
         elif len(args.detect_regression) == 1:
             if args.generate_baseline or args.generate_new_metrics:
                 return True
-            logging.error('Need to specify --generate-baseline or --generate-new-metrics.')
+            logging.error('Need to specify --generate-baseline or'
+                          ' --generate-new-metrics.')
             return False
         elif len(args.detect_regression) == 2:
             if args.generate_baseline:
-                logging.error('Specified 2 metric paths and --generate-baseline, '
-                              'either drop --generate-baseline or drop a path')
+                logging.error('Specified 2 metric paths and --generate-baseline'
+                              ', either drop --generate-baseline or drop a path')
                 return False
             if args.generate_new_metrics:
                 logging.error('Specified 2 metric paths and --generate-new-metrics, '
@@ -447,8 +457,8 @@ def _split_test_mapping_tests(test_infos):
             device.
     """
     assert is_from_test_mapping(test_infos)
-    host_test_infos = set([info for info in test_infos if info.host])
-    device_test_infos = set([info for info in test_infos if not info.host])
+    host_test_infos = {[info for info in test_infos if info.host]}
+    device_test_infos = {[info for info in test_infos if not info.host]}
     return device_test_infos, host_test_infos
 
 
@@ -544,6 +554,14 @@ def _print_testable_modules(mod_info, suite):
     print('-------')
     for module in sorted(testable_modules):
         print('\t%s' % module)
+def _is_inside_android_root():
+    """Identify whether the cwd is inside of Android source tree.
+
+    Returns:
+        False if the cwd is outside of the source tree, True otherwise.
+    """
+    build_top = os.getenv(constants.ANDROID_BUILD_TOP, ' ')
+    return build_top in os.getcwd()
 
 # pylint: disable=too-many-statements
 # pylint: disable=too-many-branches
@@ -570,6 +588,14 @@ def main(argv, results_dir):
         if os.path.isfile(constants.VERSION_FILE):
             with open(constants.VERSION_FILE) as version_file:
                 print(version_file.read())
+        return constants.EXIT_CODE_SUCCESS
+    if not _is_inside_android_root():
+        atest_utils.colorful_print(
+            "\nAtest must always work under ${}!".format(
+                constants.ANDROID_BUILD_TOP), constants.RED)
+        return constants.EXIT_CODE_OUTSIDE_ROOT
+    if args.help:
+        atest_arg_parser.print_epilog_text()
         return constants.EXIT_CODE_SUCCESS
     mod_info = module_info.ModuleInfo(force_build=args.rebuild_module_info)
     if args.rebuild_module_info:
@@ -643,8 +669,8 @@ def main(argv, results_dir):
         if not success:
             return constants.EXIT_CODE_BUILD_FAILURE
     elif constants.TEST_STEP not in steps:
-        logging.warn('Install step without test step currently not '
-                     'supported, installing AND testing instead.')
+        logging.warning('Install step without test step currently not '
+                        'supported, installing AND testing instead.')
         steps.append(constants.TEST_STEP)
     tests_exit_code = constants.EXIT_CODE_SUCCESS
     test_start = time.time()

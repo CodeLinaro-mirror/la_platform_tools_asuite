@@ -20,6 +20,7 @@ This module has a collection of functions that provide helper functions to
 other modules.
 """
 
+import inspect
 import logging
 import os
 import sys
@@ -50,6 +51,8 @@ _ENVSETUP_NOT_RUN = ('Please run "source build/envsetup.sh" and "lunch" before '
                      'running aidegen.')
 _LOG_FORMAT = '%(asctime)s %(filename)s:%(lineno)s:%(levelname)s: %(message)s'
 _DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
+_ARG_IS_NULL_ERROR = "{0}.{1}: argument '{2}' is null."
+_ARG_TYPE_INCORRECT_ERROR = "{0}.{1}: argument '{2}': type is {3}, must be {4}."
 
 
 def time_logged(func=None, *, message='', maximum=1):
@@ -509,3 +512,85 @@ def is_source_under_relative_path(source, relative_path):
         True if source file is a project relative path file, otherwise False.
     """
     return source == relative_path or source.startswith(relative_path + os.sep)
+
+
+def remove_user_home_path(data):
+    """Replace the user home path string with a constant string.
+
+    Args:
+        data: A string of xml content or an attributeError of error message.
+
+    Returns:
+        A string which replaced the user home path to $USER_HOME$.
+    """
+    return str(data).replace(os.path.expanduser('~'), constant.USER_HOME)
+
+
+def io_error_handle(func):
+    """Decorates a function of handling io error and raising exception.
+
+    Args:
+        func: A function is to be raised exception if writing file failed.
+
+    Returns:
+        The wrapper function.
+    """
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        """A wrapper function."""
+        try:
+            return func(*args, **kwargs)
+        except IOError as err:
+            print('{0}.{1} I/O error: {2}'.format(
+                func.__module__, func.__name__, err))
+            raise
+    return wrapper
+
+
+def check_args(**decls):
+    """Decorates a function to check its argument types.
+
+    Usage:
+        @check_args(name=str, text=str)
+        def parse_rule(name, text):
+            ...
+
+    Args:
+        decls: A dictionary with keys as arguments' names and values as
+             arguments' types.
+
+    Returns:
+        The wrapper function.
+    """
+
+    def decorator(func):
+        """A wrapper function."""
+        fmodule = func.__module__
+        fname = func.__name__
+        fparams = inspect.signature(func).parameters
+
+        @wraps(func)
+        def decorated(*args, **kwargs):
+            """A wrapper function."""
+            params = {k:v for k, v in zip(fparams, args)}
+            for arg_name, arg_type in decls.items():
+                try:
+                    arg_val = params[arg_name]
+                except KeyError:
+                    # If arg_name can't be found in function's signature, it
+                    # might be a case of a partial function or default
+                    # parameters, we'll neglect it.
+                    if arg_name not in kwargs:
+                        continue
+                    arg_val = kwargs.get(arg_name)
+                if arg_val is None:
+                    raise TypeError(_ARG_IS_NULL_ERROR.format(
+                        fmodule, fname, arg_name))
+                if not isinstance(arg_val, arg_type):
+                    raise TypeError(_ARG_TYPE_INCORRECT_ERROR.format(
+                        fmodule, fname, arg_name, type(arg_val), arg_type))
+            return func(*args, **kwargs)
+        return decorated
+
+    return decorator
