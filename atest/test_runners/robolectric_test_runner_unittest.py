@@ -13,16 +13,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Unittests for robolectric_test_runner."""
+
+# pylint: disable=line-too-long
 
 import json
 import unittest
 import subprocess
 import tempfile
-import mock
+
+from unittest import mock
 
 import event_handler
-# pylint: disable=import-error
+
 from test_finders import test_info
 from test_runners import robolectric_test_runner
 

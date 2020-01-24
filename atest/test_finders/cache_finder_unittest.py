@@ -16,13 +16,16 @@
 
 """Unittests for cache_finder."""
 
+# pylint: disable=line-too-long
+
 import unittest
 import os
-import mock
 
-# pylint: disable=import-error
+from unittest import mock
+
 import atest_utils
 import unittest_constants as uc
+
 from test_finders import cache_finder
 
 

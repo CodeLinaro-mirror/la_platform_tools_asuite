@@ -16,15 +16,17 @@
 Integration Finder class.
 """
 
+# pylint: disable=line-too-long
+
 import copy
 import logging
 import os
 import re
 import xml.etree.ElementTree as ElementTree
 
-# pylint: disable=import-error
 import atest_error
 import constants
+
 from test_finders import test_info
 from test_finders import test_finder_base
 from test_finders import test_finder_utils
@@ -35,7 +37,7 @@ from test_runners import atest_tf_test_runner
 _INT_NAME_RE = re.compile(r'^.*\/res\/config\/(?P<int_name>.*).xml$')
 _TF_TARGETS = frozenset(['tradefed', 'tradefed-contrib'])
 _GTF_TARGETS = frozenset(['google-tradefed', 'google-tradefed-contrib'])
-_CONTRIB_TARGETS = frozenset(['tradefed-contrib', 'google-tradefed-contrib'])
+_CONTRIB_TARGETS = frozenset(['google-tradefed-contrib'])
 _TF_RES_DIR = '../res/config'
 
 
@@ -101,15 +103,17 @@ class TFIntegrationFinder(test_finder_base.TestFinderBase):
     def _load_include_tags(self, root):
         """Recursively expand in-place the <include> tags in a given xml tree.
 
-        Python xml libraries don't support our type of <include> tags. Logic used
-        below is modified version of the built-in ElementInclude logic found here:
+        Python xml libraries don't support our type of <include> tags. Logic
+        used below is modified version of the built-in ElementInclude logic
+        found here:
         https://github.com/python/cpython/blob/2.7/Lib/xml/etree/ElementInclude.py
 
         Args:
             root: The root xml.etree.ElementTree.Element.
 
         Returns:
-            An xml.etree.ElementTree.Element instance with include tags expanded
+            An xml.etree.ElementTree.Element instance with
+            include tags expanded.
         """
         i = 0
         while i < len(root):
@@ -118,7 +122,7 @@ class TFIntegrationFinder(test_finder_base.TestFinderBase):
                 # expand included xml file
                 integration_name = elem.get('name')
                 if not integration_name:
-                    logging.warn('skipping <include> tag with no "name" value')
+                    logging.warning('skipping <include> tag with no "name" value')
                     continue
                 full_paths = self._search_integration_dirs(integration_name)
                 node = None
@@ -193,8 +197,8 @@ class TFIntegrationFinder(test_finder_base.TestFinderBase):
             return None
         int_name = match.group('int_name')
         if int_name != name:
-            logging.warn('Input (%s) not valid integration name, '
-                         'did you mean: %s?', name, int_name)
+            logging.warning('Input (%s) not valid integration name, '
+                            'did you mean: %s?', name, int_name)
             return None
         rel_config = os.path.relpath(test_file, self.root_dir)
         filters = frozenset()
@@ -204,9 +208,9 @@ class TFIntegrationFinder(test_finder_base.TestFinderBase):
             if '.' in class_name:
                 test_filters.append(test_info.TestFilter(class_name, methods))
             else:
-                logging.warn('Looking up fully qualified class name for: %s.'
-                             'Improve speed by using fully qualified names.',
-                             class_name)
+                logging.warning('Looking up fully qualified class name for: %s.'
+                                'Improve speed by using fully qualified names.',
+                                class_name)
                 paths = test_finder_utils.find_class_file(self.root_dir,
                                                           class_name)
                 if not paths:

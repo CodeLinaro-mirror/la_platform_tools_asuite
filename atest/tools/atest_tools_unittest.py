@@ -16,13 +16,16 @@
 
 """Unittest for atest_tools."""
 
+# pylint: disable=line-too-long
+
 import os
 import pickle
 import platform
 import subprocess
 import sys
 import unittest
-import mock
+
+from unittest import mock
 
 import atest_tools
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))

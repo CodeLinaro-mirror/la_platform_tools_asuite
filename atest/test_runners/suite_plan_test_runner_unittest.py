@@ -13,14 +13,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Unittests for test_suite_test_runner."""
 
-import unittest
-import mock
+# pylint: disable=line-too-long
 
-# pylint: disable=import-error
+import unittest
+
+from unittest import mock
+
 import suite_plan_test_runner
 import unittest_utils
+
 from test_finders import test_info
 
 

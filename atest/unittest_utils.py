@@ -14,6 +14,8 @@
 
 """Utility functions for unit tests."""
 
+# pylint: disable=line-too-long
+
 import os
 
 import constants
@@ -27,8 +29,8 @@ def assert_strict_equal(test_class, first, second):
     """
     test_class.assertEqual(first, second)
     # allow byte and unicode string equality.
-    if not (isinstance(first, basestring) and
-            isinstance(second, basestring)):
+    if not (isinstance(first, str) and
+            isinstance(second, str)):
         test_class.assertIsInstance(first, type(second))
         test_class.assertIsInstance(second, type(first))
     # Recursively check elements of namedtuples for strict equals.

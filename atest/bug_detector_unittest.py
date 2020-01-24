@@ -16,11 +16,14 @@
 
 """Unittests for bug_detector."""
 
+# pylint: disable=line-too-long
+
 import datetime
 import json
 import os
 import unittest
-import mock
+
+from unittest import mock
 
 import bug_detector
 import constants

@@ -16,8 +16,10 @@
 Utility functions for atest.
 """
 
+
 from __future__ import print_function
 
+import curses
 import hashlib
 import itertools
 import json
@@ -25,8 +27,12 @@ import logging
 import os
 import pickle
 import re
+import shutil
 import subprocess
 import sys
+
+from distutils import util
+from urllib.request import urlopen
 
 import atest_decorator
 import atest_error
@@ -35,13 +41,6 @@ import constants
 from metrics import metrics_base
 from metrics import metrics_utils
 
-try:
-    # If PYTHON2
-    from urllib2 import urlopen
-except ImportError:
-    metrics_utils.handle_exc_and_send_exit_event(
-        constants.IMPORT_FAILURE)
-    from urllib.request import urlopen
 
 _BASH_RESET_CODE = '\033[0m\n'
 # Arbitrary number to limit stdout for failed runs in _run_limited_output.
@@ -62,11 +61,12 @@ BUILD_TOP_HASH = hashlib.md5(os.environ.get(constants.ANDROID_BUILD_TOP, '').
 TEST_INFO_CACHE_ROOT = os.path.join(os.path.expanduser('~'), '.atest',
                                     'info_cache', BUILD_TOP_HASH[:8])
 _DEFAULT_TERMINAL_WIDTH = 80
+_DEFAULT_TERMINAL_HEIGHT = 25
 _BUILD_CMD = 'build/soong/soong_ui.bash'
 
 
 def get_build_cmd():
-    """Compose build command with relative path and flag "--make-mode".
+    """Compose build command with no-absolute path and flag "--make-mode".
 
     Returns:
         A list of soong build command.
@@ -114,12 +114,7 @@ def _run_limited_output(cmd, env_vars=None):
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, env=env_vars)
     sys.stdout.write('\n')
-    # Determine the width of the terminal. We'll need to clear this many
-    # characters when carriage returning. Set default value as 80.
-    term_width = _DEFAULT_TERMINAL_WIDTH
-    stty_size = os.popen('stty size').read()
-    if stty_size:
-        term_width = int(stty_size.split()[1])
+    term_width, _ = _get_terminal_size()
     white_space = " " * int(term_width)
     full_output = []
     while proc.poll() is None:
@@ -256,8 +251,7 @@ def _has_colors(stream):
     cached_has_colors = _has_colors.cached_has_colors
     if stream in cached_has_colors:
         return cached_has_colors[stream]
-    else:
-        cached_has_colors[stream] = True
+    cached_has_colors[stream] = True
     # Following from Python cookbook, #475186
     if not hasattr(stream, "isatty"):
         cached_has_colors[stream] = False
@@ -267,7 +261,6 @@ def _has_colors(stream):
         cached_has_colors[stream] = False
         return False
     try:
-        import curses
         curses.setupterm()
         cached_has_colors[stream] = curses.tigetnum("colors") > 2
     # pylint: disable=broad-except
@@ -318,6 +311,27 @@ def colorful_print(text, color, highlight=False, auto_wrap=True):
         print(output)
     else:
         print(output, end="")
+
+
+# pylint: disable=no-member
+# TODO: remove the above disable when migrating to python3.
+def _get_terminal_size():
+    """Get terminal size and return a tuple.
+
+    Returns:
+        2 integers: the size of X(columns) and Y(lines/rows).
+    """
+    # Determine the width of the terminal. We'll need to clear this many
+    # characters when carriage returning. Set default value as 80.
+    try:
+        if sys.version_info[0] == 2:
+            _y, _x = subprocess.check_output(['stty', 'size']).decode().split()
+            return int(_x), int(_y)
+        return (shutil.get_terminal_size().columns,
+                shutil.get_terminal_size().lines)
+    # b/137521782 stty size could have changed for reasones.
+    except subprocess.CalledProcessError:
+        return _DEFAULT_TERMINAL_WIDTH, _DEFAULT_TERMINAL_HEIGHT
 
 
 def is_external_run():
@@ -380,28 +394,24 @@ def handle_test_runner_cmd(input_test, test_cmds, do_verification=False,
     former_test_cmds = full_result_content.get(input_test, [])
     if not _are_identical_cmds(test_cmds, former_test_cmds):
         if do_verification:
-            raise atest_error.DryRunVerificationError('Dry run verification failed,'
-                                                      ' former commands: %s' %
-                                                      former_test_cmds)
+            raise atest_error.DryRunVerificationError(
+                'Dry run verification failed, former commands: {}'.format(
+                    former_test_cmds))
         if former_test_cmds:
             # If former_test_cmds is different from test_cmds, ask users if they
             # are willing to update the result.
             print('Former cmds = %s' % former_test_cmds)
             print('Current cmds = %s' % test_cmds)
             try:
-                # TODO(b/137156054):
-                # Move the import statement into a method for that distutils is
-                # not a built-in lib in older python3(b/137017806). Will move it
-                # back when embedded_launcher fully supports Python3.
-                from distutils.util import strtobool
-                if not strtobool(raw_input('Do you want to update former result'
-                                           'with the latest one?(Y/n)')):
+                if not util.strtobool(
+                        input('Do you want to update former result '
+                              'with the latest one?(Y/n)')):
                     print('SKIP updating result!!!')
                     return
             except ValueError:
-                # Default action is updating the command result of the input_test.
-                # If the user input is unrecognizable telling yes or no,
-                # "Y" is implicitly applied.
+                # Default action is updating the command result of the
+                # input_test. If the user input is unrecognizable telling yes
+                # or no, "Y" is implicitly applied.
                 pass
     else:
         # If current commands are the same as the formers, no need to update
@@ -524,8 +534,8 @@ def load_test_info_cache(test_reference, cache_root=TEST_INFO_CACHE_ROOT):
             with open(cache_file, 'rb') as config_dictionary_file:
                 return pickle.load(config_dictionary_file)
         except (pickle.UnpicklingError, ValueError, EOFError, IOError) as err:
-            # Won't break anything, just remove the old cache, log this error, and
-            # collect the exception by metrics.
+            # Won't break anything, just remove the old cache, log this error,
+            # and collect the exception by metrics.
             logging.debug('Exception raised: %s', err)
             os.remove(cache_file)
             metrics_utils.handle_exc_and_send_exit_event(
