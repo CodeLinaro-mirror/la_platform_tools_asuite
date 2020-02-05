@@ -38,9 +38,18 @@ import atest_decorator
 import atest_error
 import constants
 
-from metrics import metrics_base
-from metrics import metrics_utils
-
+# b/147562331 only occurs when running atest in source code. We don't encourge
+# the users to manually "pip3 install protobuf", therefore when the exception
+# occurs, we don't collect data and the tab completion is for args is silence.
+try:
+    from metrics import metrics_base
+    from metrics import metrics_utils
+except ModuleNotFoundError:
+    # This exception occurs only when invoking atest in source code.
+    print("You shouldn't see this message unless you ran 'atest-src'."
+          "To resolve the issue, please run:\n\t{}\n"
+          "and try again.".format('pip3 install protobuf'))
+    sys.exit(constants.IMPORT_FAILURE)
 
 _BASH_RESET_CODE = '\033[0m\n'
 # Arbitrary number to limit stdout for failed runs in _run_limited_output.
@@ -313,8 +322,6 @@ def colorful_print(text, color, highlight=False, auto_wrap=True):
         print(output, end="")
 
 
-# pylint: disable=no-member
-# TODO: remove the above disable when migrating to python3.
 def _get_terminal_size():
     """Get terminal size and return a tuple.
 
@@ -323,15 +330,9 @@ def _get_terminal_size():
     """
     # Determine the width of the terminal. We'll need to clear this many
     # characters when carriage returning. Set default value as 80.
-    try:
-        if sys.version_info[0] == 2:
-            _y, _x = subprocess.check_output(['stty', 'size']).decode().split()
-            return int(_x), int(_y)
-        return (shutil.get_terminal_size().columns,
-                shutil.get_terminal_size().lines)
-    # b/137521782 stty size could have changed for reasones.
-    except subprocess.CalledProcessError:
-        return _DEFAULT_TERMINAL_WIDTH, _DEFAULT_TERMINAL_HEIGHT
+    columns, rows = shutil.get_terminal_size(
+        fallback=(_DEFAULT_TERMINAL_WIDTH, _DEFAULT_TERMINAL_HEIGHT))
+    return columns, rows
 
 
 def is_external_run():
@@ -445,7 +446,7 @@ def _are_identical_cmds(current_cmds, former_cmds):
         Returns:
             A list with elements. E.g. ['cmd', 'arg1', 'arg2', 'True']
         """
-        _cmd = ''.join(cmd_list).encode('utf-8').split()
+        _cmd = ''.join(cmd_list).split()
         for cmd in _cmd:
             if cmd.startswith('--atest-log-file-path'):
                 _cmd.remove(cmd)
@@ -532,8 +533,12 @@ def load_test_info_cache(test_reference, cache_root=TEST_INFO_CACHE_ROOT):
         logging.debug('Loading cache %s.', cache_file)
         try:
             with open(cache_file, 'rb') as config_dictionary_file:
-                return pickle.load(config_dictionary_file)
-        except (pickle.UnpicklingError, ValueError, EOFError, IOError) as err:
+                return pickle.load(config_dictionary_file, encoding='utf-8')
+        except (pickle.UnpicklingError,
+                ValueError,
+                TypeError,
+                EOFError,
+                IOError) as err:
             # Won't break anything, just remove the old cache, log this error,
             # and collect the exception by metrics.
             logging.debug('Exception raised: %s', err)

@@ -181,6 +181,7 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
         return ret_code
 
     # pylint: disable=too-many-branches
+    # pylint: disable=too-many-locals
     def _start_monitor(self, server, tf_subproc, reporter):
         """Polling and process event.
 
@@ -254,6 +255,8 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
         # Set connection into blocking mode.
         conn.settimeout(None)
         data = conn.recv(SOCKET_BUFFER)
+        if isinstance(data, bytes):
+            data = data.decode()
         logging.debug('received: %s', data)
         if data:
             data_map[conn] += data
@@ -383,6 +386,7 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
                 args_to_append.append('--enable-optional-parameterization')
                 args_to_append.append('--module-parameter')
                 args_to_append.append(extra_args[arg])
+                continue
             if constants.ITERATIONS == arg:
                 args_to_append.append('--retry-strategy')
                 args_to_append.append(constants.ITERATIONS)
@@ -445,7 +449,10 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
         if metrics_folder:
             test_args.extend(['--metrics-folder', metrics_folder])
             logging.info('Saved metrics in: %s', metrics_folder)
-        log_level = 'VERBOSE' if self.is_verbose else 'WARN'
+        log_level = 'WARN'
+        if self.is_verbose:
+            log_level = 'VERBOSE'
+            test_args.extend(['--log-level-display', log_level])
         test_args.extend(['--log-level', log_level])
 
         args_to_add, args_not_supported = self._parse_extra_args(extra_args)
@@ -580,10 +587,6 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
         if test_infos[0].from_test_mapping:
             args.extend(constants.TEST_MAPPING_RESULT_SERVER_ARGS)
         test_infos = self._flatten_test_infos(test_infos)
-        # In order to do dry-run verification, sort it to make each run has the
-        # same result
-        test_infos = list(test_infos)
-        test_infos.sort()
         has_integration_test = False
         for info in test_infos:
             # Integration test exists in TF's jar, so it must have the option
