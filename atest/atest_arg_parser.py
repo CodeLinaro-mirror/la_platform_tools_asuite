@@ -36,6 +36,8 @@ HELP_DESC = ('A command line tool that allows users to build, install, and run '
 ALL_ABI = 'Set to run tests for all abis.'
 BUILD = 'Run a build.'
 CLEAR_CACHE = 'Wipe out the test_infos cache of the test.'
+COLLECT_TESTS_ONLY = ('Collect a list test cases of the instrumentation tests '
+                      'without testing them in real.')
 DISABLE_TEARDOWN = 'Disable test teardown and cleanup.'
 DRY_RUN = 'Dry run atest without building, installing and running tests in real.'
 ENABLE_FILE_PATTERNS = 'Enable FILE_PATTERNS in TEST_MAPPING.'
@@ -63,6 +65,8 @@ TEST = ('Run the tests. WARNING: Many test configs force cleanup of device '
         'disable cleanup for "-t" to work. Otherwise, device will need to be '
         'setup again with "-i".')
 TEST_MAPPING = 'Run tests defined in TEST_MAPPING files.'
+TF_TEMPLATE = ('Add extra tradefed template for ATest suite, '
+               'e.g. atest <test> --tf-template <template_key>=<template_path>')
 UPDATE_CMD_MAPPING = ('Update the test command of input tests. Warning: result '
                       'will be saved under tools/tradefederation/core/atest/test_data.')
 USER_TYPE = 'Run test with specific user type, e.g. atest <test> --user-type secondary_user'
@@ -132,7 +136,12 @@ class AtestArgParser(argparse.ArgumentParser):
                           help=ENABLE_FILE_PATTERNS)
 
         # Options for information queries and dry-runs:
-        self.add_argument('--dry-run', action='store_true', help=DRY_RUN)
+        # A group of options for dry-runs. They are mutually exclusive
+        # in a command line.
+        group = self.add_mutually_exclusive_group()
+        group.add_argument('--collect-tests-only', action='store_true',
+                           help=COLLECT_TESTS_ONLY)
+        group.add_argument('--dry-run', action='store_true', help=DRY_RUN)
         self.add_argument('-h', '--help', action='store_true',
                           help='Print this help message.')
         self.add_argument('--info', action='store_true', help=INFO)
@@ -166,6 +175,10 @@ class AtestArgParser(argparse.ArgumentParser):
                           help=UPDATE_CMD_MAPPING)
         self.add_argument('-y', '--verify-cmd-mapping', action='store_true',
                           help=VERIFY_CMD_MAPPING)
+
+        # Options for Tradefed customization related.
+        self.add_argument('--tf-template', action='append',
+                          help=TF_TEMPLATE)
 
         # A group of options for rerun strategy. They are mutually exclusive
         # in a command line.
@@ -211,6 +224,7 @@ def print_epilog_text():
     epilog_text = EPILOG_TEMPLATE.format(ALL_ABI=ALL_ABI,
                                          BUILD=BUILD,
                                          CLEAR_CACHE=CLEAR_CACHE,
+                                         COLLECT_TESTS_ONLY=COLLECT_TESTS_ONLY,
                                          DISABLE_TEARDOWN=DISABLE_TEARDOWN,
                                          DRY_RUN=DRY_RUN,
                                          ENABLE_FILE_PATTERNS=ENABLE_FILE_PATTERNS,
@@ -228,6 +242,7 @@ def print_epilog_text():
                                          SERIAL=SERIAL,
                                          TEST=TEST,
                                          TEST_MAPPING=TEST_MAPPING,
+                                         TF_TEMPLATE=TF_TEMPLATE,
                                          USER_TYPE=USER_TYPE,
                                          UPDATE_CMD_MAPPING=UPDATE_CMD_MAPPING,
                                          VERBOSE=VERBOSE,
@@ -275,6 +290,9 @@ OPTIONS
         -t, --test
             {TEST} (default)
 
+        --tf-template
+            {TF_TEMPLATE}
+
         -w, --wait-for-debugger
             {WAIT_FOR_DEBUGGER}
 
@@ -291,6 +309,9 @@ OPTIONS
 
 
         [ Information/Queries ]
+        --collect-tests-only
+            {COLLECT_TESTS_ONLY}
+
         --info
             {INFO}
 
