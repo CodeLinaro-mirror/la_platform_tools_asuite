@@ -122,7 +122,7 @@ class TestFinderUtilsUnittests(unittest.TestCase):
 
     @mock.patch.object(test_finder_utils, 'has_method_in_file',
                        return_value=False)
-    @mock.patch('builtins.input', return_value='1')
+    @mock.patch('builtins.input', return_value='0')
     def test_extract_test_path(self, _, has_method):
         """Test extract_test_dir method."""
         paths = [os.path.join(uc.ROOT, CLASS_DIR, uc.CLASS_NAME + '.java')]
@@ -166,7 +166,7 @@ class TestFinderUtilsUnittests(unittest.TestCase):
         unittest_utils.assert_strict_equal(
             self, test_finder_utils.extract_test_path(uc.FIND_ONE), paths)
         paths = [os.path.join(uc.ROOT, OTHER_DIR, OTHER_CLASS_NAME)]
-        mock_input.return_value = '0'
+        mock_input.return_value = '1'
         unittest_utils.assert_strict_equal(
             self, test_finder_utils.extract_test_path(FIND_TWO), paths)
         # Test inputing out-of-range integer or a string
@@ -421,6 +421,7 @@ class TestFinderUtilsUnittests(unittest.TestCase):
             self.assertEqual(ignore_dirs, cached_answer)
             self.assertNotEqual(ignore_dirs, none_cached_answer)
 
+    @mock.patch.dict('os.environ', {constants.ANDROID_BUILD_TOP:'/'})
     @mock.patch('builtins.input', return_value='0')
     def test_search_integration_dirs(self, mock_input):
         """Test search_integration_dirs."""
@@ -527,6 +528,7 @@ class TestFinderUtilsUnittests(unittest.TestCase):
         self.assertTrue(cpp_class in cc_tmp_test_result)
         self.assertTrue(cc_class in cc_tmp_test_result)
 
+    @mock.patch.dict('os.environ', {constants.ANDROID_BUILD_TOP:'/'})
     @mock.patch('builtins.input', return_value='0')
     @mock.patch.object(test_finder_utils, 'get_dir_path_and_filename')
     @mock.patch('os.path.exists', return_value=True)
