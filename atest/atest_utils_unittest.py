@@ -239,6 +239,14 @@ class AtestUtilsUnittests(unittest.TestCase):
         mock_output.return_value = 'test@google.com'
         self.assertFalse(atest_utils.is_external_run())
 
+        mock_output.return_value = 'test@other.com'
+        mock_hostname.return_value = 'c.googlers.com'
+        self.assertFalse(atest_utils.is_external_run())
+
+        mock_output.return_value = 'test@other.com'
+        mock_hostname.return_value = 'a.googlers.com'
+        self.assertTrue(atest_utils.is_external_run())
+
         mock_output.side_effect = OSError()
         self.assertTrue(atest_utils.is_external_run())
 
@@ -398,6 +406,10 @@ class AtestUtilsUnittests(unittest.TestCase):
                                         '/test_fp3.java']]
         self.assertEqual({'/a/b/test_fp4', '/a/b/test_fp3.java'},
                          atest_utils.get_modified_files(''))
+
+    def test_delimiter(self):
+        """Test method delimiter"""
+        self.assertEqual('\n===\n\n', atest_utils.delimiter('=', 3, 1, 2))
 
 if __name__ == "__main__":
     unittest.main()
