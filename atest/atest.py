@@ -52,7 +52,7 @@ from metrics import metrics
 from metrics import metrics_base
 from metrics import metrics_utils
 from test_runners import regression_test_runner
-from tools import atest_tools
+from tools import atest_tools as at
 
 EXPECTED_VARS = frozenset([
     constants.ANDROID_BUILD_TOP,
@@ -71,29 +71,25 @@ TEST_COUNT = 'test_count'
 TEST_TYPE = 'test_type'
 # Tasks that must run in the build time but unable to build by soong.
 # (e.g subprocesses that invoke host commands.)
-EXTRA_TASKS = {
-    'index-targets': atest_tools.index_targets
-}
+ACLOUD_CREATE = at.acloud_create
+INDEX_TARGETS = at.index_targets
 
 
-def _run_extra_tasks(join=False):
-    """Execute EXTRA_TASKS with multiprocessing.
+def _run_multi_proc(func, *args, **kwargs):
+    """Start a process with multiprocessing and return Process object.
 
     Args:
-        join: A boolean that indicates the process should terminate when
-        the main process ends or keep itself alive. True indicates the
-        main process will wait for all subprocesses finish while False represents
-        killing all subprocesses when the main process exits.
+        func: A string of function name which will be the target name.
+        args/kwargs: check doc page:
+        https://docs.python.org/3.8/library/multiprocessing.html#process-and-exceptions
+
+    Returns:
+        multiprocessing.Process object.
     """
-    _running_procs = []
-    for task in EXTRA_TASKS.values():
-        proc = Process(target=task)
-        proc.daemon = not join
-        proc.start()
-        _running_procs.append(proc)
-    if join:
-        for proc in _running_procs:
-            proc.join()
+
+    proc = Process(target=func, *args, **kwargs)
+    proc.start()
+    return proc
 
 
 def _parse_args(argv):
@@ -198,7 +194,8 @@ def get_extra_args(args):
                 'sharding': constants.SHARDING,
                 'tf_debug': constants.TF_DEBUG,
                 'tf_template': constants.TF_TEMPLATE,
-                'user_type': constants.USER_TYPE}
+                'user_type': constants.USER_TYPE,
+                'flakes_info': constants.FLAKES_INFO}
     not_match = [k for k in arg_maps if k not in vars(args)]
     if not_match:
         raise AttributeError('%s object has no attribute %s'
@@ -623,6 +620,8 @@ def _dry_run_validator(args, results_dir, extra_args, test_infos):
         result_dir: A string path of the results dir.
         extra_args: A dict of extra args for test runners to utilize.
         test_infos: A list of test_info.
+    Returns:
+        Exit code.
     """
     args.tests.sort()
     dry_run_cmds = _dry_run(results_dir, extra_args, test_infos)
@@ -637,8 +636,42 @@ def _dry_run_validator(args, results_dir, extra_args, test_infos):
     if args.update_cmd_mapping:
         atest_utils.handle_test_runner_cmd(' '.join(args.tests),
                                            dry_run_cmds)
-    sys.exit(constants.EXIT_CODE_SUCCESS)
+    return constants.EXIT_CODE_SUCCESS
 
+def acloud_create_validator(results_dir, args):
+    """Check lunch'd target before running 'acloud create'.
+
+    Args:
+        results_dir: A string of the results directory.
+        args: A list of arguments.
+
+    Returns:
+        If the target is valid:
+            A tuple of (multiprocessing.Process,
+                        string of report file path,
+                        start time of acloud_create)
+        else:
+            None, None, None
+    """
+    if not any((args.acloud_create, args.start_avd)):
+        return None, None, None
+    if args.start_avd:
+        args.acloud_create = ['--num=1']
+    acloud_args = ' '.join(args.acloud_create)
+    target = os.getenv('TARGET_PRODUCT', "")
+    if 'cf_x86' in target:
+        start = time.time()
+        report_file = at.get_report_file(results_dir, acloud_args)
+        acloud_proc = _run_multi_proc(
+            func=ACLOUD_CREATE,
+            args=[report_file],
+            kwargs={'args':acloud_args,
+                    'no_metrics_notice':args.no_metrics})
+        return acloud_proc, report_file, start
+    atest_utils.colorful_print(
+        '{} is not cf_x86 family; will not create any AVD.'.format(target),
+        constants.RED)
+    return None, None, None
 
 # pylint: disable=too-many-statements
 # pylint: disable=too-many-branches
@@ -664,9 +697,11 @@ def main(argv, results_dir, args):
         cwd=os.getcwd(),
         os=os_pyver)
     _non_action_validator(args)
+    proc_acloud, report_file, acloud_start = acloud_create_validator(results_dir, args)
     mod_info = module_info.ModuleInfo(force_build=args.rebuild_module_info)
     if args.rebuild_module_info:
-        _run_extra_tasks(join=True)
+        proc_idx = _run_multi_proc(INDEX_TARGETS)
+        proc_idx.join()
     translator = cli_translator.CLITranslator(module_info=mod_info,
                                               print_cache_msg=not args.clear_cache)
     if args.list_modules:
@@ -678,7 +713,9 @@ def main(argv, results_dir, args):
     build_targets = set()
     test_infos = set()
     if _will_run_tests(args):
+        find_start = time.time()
         build_targets, test_infos = translator.translate(args)
+        find_duration = time.time() - find_start
         if not test_infos:
             return constants.EXIT_CODE_TEST_NOT_FOUND
         if not is_from_test_mapping(test_infos):
@@ -691,7 +728,7 @@ def main(argv, results_dir, args):
                                                               test_infos)
     extra_args = get_extra_args(args)
     if any((args.update_cmd_mapping, args.verify_cmd_mapping, args.dry_run)):
-        _dry_run_validator(args, results_dir, extra_args, test_infos)
+        return _dry_run_validator(args, results_dir, extra_args, test_infos)
     if args.detect_regression:
         build_targets |= (regression_test_runner.RegressionTestRunner('')
                           .get_test_runner_build_reqs())
@@ -701,18 +738,40 @@ def main(argv, results_dir, args):
         if constants.TEST_STEP in steps and not args.rebuild_module_info:
             # Run extra tasks along with build step concurrently. Note that
             # Atest won't index targets when only "-b" is given(without -t).
-            _run_extra_tasks(join=False)
+            proc_idx = _run_multi_proc(INDEX_TARGETS, daemon=True)
         # Add module-info.json target to the list of build targets to keep the
         # file up to date.
         build_targets.add(mod_info.module_info_target)
         build_start = time.time()
         success = atest_utils.build(build_targets, verbose=args.verbose)
+        build_duration = time.time() - build_start
         metrics.BuildFinishEvent(
-            duration=metrics_utils.convert_duration(time.time() - build_start),
+            duration=metrics_utils.convert_duration(build_duration),
             success=success,
             targets=build_targets)
         if not success:
             return constants.EXIT_CODE_BUILD_FAILURE
+        if proc_acloud:
+            proc_acloud.join()
+            status = at.probe_acloud_status(report_file)
+            acloud_duration = time.time() - acloud_start
+            find_build_duration = find_duration + build_duration
+            if find_build_duration - acloud_duration >= 0:
+                # find+build took longer, saved acloud create time.
+                logging.debug('Saved acloud create time: %ss.',
+                              acloud_duration)
+                metrics.LocalDetectEvent(
+                    detect_type=constants.DETECT_TYPE_ACLOUD_CREATE,
+                    result=round(acloud_duration))
+            else:
+                # acloud create took longer, saved find+build time.
+                logging.debug('Saved Find and Build time: %ss.',
+                              find_build_duration)
+                metrics.LocalDetectEvent(
+                    detect_type=constants.DETECT_TYPE_FIND_BUILD,
+                    result=round(find_build_duration))
+            if status != 0:
+                return status
     elif constants.TEST_STEP not in steps:
         logging.warning('Install step without test step currently not '
                         'supported, installing AND testing instead.')
@@ -730,7 +789,8 @@ def main(argv, results_dir, args):
     if args.detect_regression:
         regression_args = _get_regression_detection_args(args, results_dir)
         # TODO(b/110485713): Should not call run_tests here.
-        reporter = result_reporter.ResultReporter()
+        reporter = result_reporter.ResultReporter(
+            collect_only=extra_args.get(constants.COLLECT_TESTS_ONLY))
         atest_execution_info.AtestExecutionInfo.result_reporters.append(reporter)
         tests_exit_code |= regression_test_runner.RegressionTestRunner(
             '').run_tests(

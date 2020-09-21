@@ -40,6 +40,9 @@ python_binary_host {
         "atest_module_info",
         "asuite_cc_client",
     ],
+    data: [
+        ":asuite_version",
+    ],
     dist: {
         targets: ["droidcore"],
     },
@@ -50,6 +53,20 @@ python_library_host {
     defaults: ["aidegen_default"],
     srcs: [
         "**/*.py",
+    ],
+    exclude_srcs: [
+        "*_unittest.py",
+        "*/*_unittest.py",
+    ]
+}
+
+python_library_host {
+    name: "aidegen_lib_common_util",
+    defaults: ["aidegen_default"],
+    srcs: [
+        "lib/common_util.py",
+        "lib/errors.py",
+        "constant.py",
     ],
     exclude_srcs: [
         "*_unittest.py",
