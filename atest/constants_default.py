@@ -93,6 +93,7 @@ MODULE_TEST_CONFIG = 'test_config'
 ANDROID_BUILD_TOP = 'ANDROID_BUILD_TOP'
 ANDROID_OUT = 'OUT'
 ANDROID_OUT_DIR = 'OUT_DIR'
+ANDROID_OUT_DIR_COMMON_BASE = 'OUT_DIR_COMMON_BASE'
 ANDROID_HOST_OUT = 'ANDROID_HOST_OUT'
 ANDROID_PRODUCT_OUT = 'ANDROID_PRODUCT_OUT'
 
@@ -178,6 +179,8 @@ TF_PREPARATION = 'tf-preparation'
 DETECT_TYPE_BUG_DETECTED = 0
 DETECT_TYPE_ACLOUD_CREATE = 1
 DETECT_TYPE_FIND_BUILD = 2
+DETECT_TYPE_NO_FLAKE = 3
+DETECT_TYPE_HAS_FLAKE = 4
 
 # Considering a trade-off between speed and size, we set UPPER_LIMIT to 100000
 # to make maximum file space 10M(100000(records)*100(byte/record)) at most.
@@ -273,3 +276,8 @@ FLAKE_POSTSUBMIT = 'postsubmit_flakes_per_week'
 
 # cert status command
 CERT_STATUS_CMD = ''
+
+# logstorage api scope.
+SCOPE_BUILD_API_SCOPE = ''
+STORAGE_API_VERSION = ''
+STORAGE_SERVICE_NAME = ''
