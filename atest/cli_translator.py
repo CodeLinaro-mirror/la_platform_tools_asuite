@@ -80,6 +80,7 @@ class CLITranslator:
 
     # pylint: disable=too-many-locals
     # pylint: disable=too-many-branches
+    # pylint: disable=too-many-statements
     def _find_test_infos(self, test, tm_test_detail,
                          is_rebuild_module_info=False):
         """Return set of TestInfos based on a given test.
@@ -128,6 +129,8 @@ class CLITranslator:
             if found_test_infos:
                 finder_info = finder.finder_info
                 for test_info in found_test_infos:
+                    # TODO (b/172984228): Add back get build dependency.
+                    test_deps = set()
                     if tm_test_detail:
                         test_info.data[constants.TI_MODULE_ARG] = (
                             tm_test_detail.options)
@@ -140,6 +143,7 @@ class CLITranslator:
                         x for x in test_info.build_targets
                         if x not in test_modules_to_build}
                     test_info.build_targets.update(mm_build_targets)
+                    test_info.build_targets.update(test_deps)
                     test_infos.add(test_info)
                 test_found = True
                 print("Found '%s' as %s" % (
