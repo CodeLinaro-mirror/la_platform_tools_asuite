@@ -129,8 +129,12 @@ class CLITranslator:
             if found_test_infos:
                 finder_info = finder.finder_info
                 for test_info in found_test_infos:
-                    # TODO (b/172984228): Add back get build dependency.
                     test_deps = set()
+                    if self.mod_info:
+                        test_deps = self.mod_info.get_module_dependency(
+                            test_info.test_name)
+                        logging.debug('(%s) Test dependencies: %s',
+                                      test_info.test_name, test_deps)
                     if tm_test_detail:
                         test_info.data[constants.TI_MODULE_ARG] = (
                             tm_test_detail.options)
@@ -347,6 +351,13 @@ class CLITranslator:
                 grouped_tests = all_tests.setdefault(test_group_name, set())
                 tests = []
                 for test in test_list:
+                    # TODO: uncomment below when atest support testing mainline
+                    # module in TEST_MAPPING files.
+                    if constants.TEST_WITH_MAINLINE_MODULES_RE.match(test['name']):
+                        logging.debug('Skipping mainline module: %s',
+                                      atest_utils.colorize(test['name'],
+                                                           constants.RED))
+                        continue
                     if (self.enable_file_patterns and
                             not test_mapping.is_match_file_patterns(
                                 test_mapping_file, test)):
