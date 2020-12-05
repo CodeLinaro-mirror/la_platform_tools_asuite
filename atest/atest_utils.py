@@ -33,9 +33,20 @@ import re
 import shutil
 import subprocess
 import sys
+import sysconfig
 import time
 import zipfile
 
+# This is a workaround of b/144743252, where the http.client failed to loaded
+# because the googleapiclient was found before the built-in libs; enabling
+# embedded launcher(b/135639220) has not been reliable and other issue will
+# raise.
+# The workaround is repositioning the built-in libs before other 3rd libs in
+# PYTHONPATH(sys.path) to eliminate the symptom of failed loading http.client.
+sys.path.insert(0, os.path.dirname(sysconfig.get_paths()['purelib']))
+sys.path.insert(0, os.path.dirname(sysconfig.get_paths()['stdlib']))
+
+#pylint: disable=wrong-import-position
 import atest_decorator
 import atest_error
 import constants
@@ -91,8 +102,6 @@ _FIND_MODIFIED_FILES_CMDS = (
     "| awk '{{print $1}}');"
     # Get the list of modified files from HEAD to previous $ahead generation.
     "git diff HEAD~$ahead --name-only")
-_TEST_WITH_MAINLINE_MODULES_RE = re.compile(
-    r'(?P<test>.*)\[(?P<mainline_modules>.*)\]')
 
 def get_build_cmd():
     """Compose build command with no-absolute path and flag "--make-mode".
@@ -943,7 +952,7 @@ def parse_mainline_modules(test):
         A string of test without mainline modules,
         A string of mainline modules.
     """
-    result = _TEST_WITH_MAINLINE_MODULES_RE.match(test)
+    result = constants.TEST_WITH_MAINLINE_MODULES_RE.match(test)
     if not result:
         return test, ""
     test_wo_mainline_modules = result.group('test')
