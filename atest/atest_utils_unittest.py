@@ -55,6 +55,12 @@ TEST_ZIP_DATA_DIR = 'zip_files'
 TEST_SINGLE_ZIP_NAME = 'single_file.zip'
 TEST_MULTI_ZIP_NAME = 'multi_file.zip'
 
+REPO_INFO_OUTPUT = '''Manifest branch: test_branch
+Manifest merge branch: refs/heads/test_branch
+Manifest groups: all,-notdefault
+----------------------------
+'''
+
 #pylint: disable=protected-access
 class AtestUtilsUnittests(unittest.TestCase):
     """Unit tests for atest_utils.py"""
@@ -497,6 +503,40 @@ class AtestUtilsUnittests(unittest.TestCase):
         test_record = atest_utils.read_test_record(test_record_file_path)
         self.assertEqual(test_record.children[0].inline_test_record.test_record_id,
                          'x86 hello_world_test')
+
+    def test_is_valid_json_file_file_not_exist(self):
+        """Test method is_valid_json_file if file not exist."""
+        json_file_path = os.path.join(unittest_constants.TEST_DATA_DIR,
+                                      "not_exist.json")
+        self.assertFalse(atest_utils.is_valid_json_file(json_file_path))
+
+    def test_is_valid_json_file_content_valid(self):
+        """Test method is_valid_json_file if file exist and content is valid."""
+        json_file_path = os.path.join(unittest_constants.TEST_DATA_DIR,
+                                      "module-info.json")
+        self.assertTrue(atest_utils.is_valid_json_file(json_file_path))
+
+    def test_is_valid_json_file_content_not_valid(self):
+        """Test method is_valid_json_file if file exist but content is valid."""
+        json_file_path = os.path.join(unittest_constants.TEST_DATA_DIR,
+                                      "not-valid-module-info.json")
+        self.assertFalse(atest_utils.is_valid_json_file(json_file_path))
+
+    @mock.patch('subprocess.check_output')
+    @mock.patch('os.getenv')
+    def test_get_manifest_branch(self, mock_env, mock_check_output):
+        """Test method get_manifest_branch"""
+        mock_env.return_value = 'any_path'
+        mock_check_output.return_value = REPO_INFO_OUTPUT
+        self.assertEqual('test_branch', atest_utils.get_manifest_branch())
+
+        mock_env.return_value = 'any_path'
+        mock_check_output.side_effect = subprocess.CalledProcessError(1, 'repo info')
+        self.assertEqual(None, atest_utils.get_manifest_branch())
+
+        mock_env.return_value = None
+        mock_check_output.return_value = REPO_INFO_OUTPUT
+        self.assertEqual(None, atest_utils.get_manifest_branch())
 
 
 if __name__ == "__main__":

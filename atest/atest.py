@@ -35,9 +35,19 @@ import tempfile
 import time
 import platform
 
+# This is a workaround of b/144743252, where the http.client failed to loaded
+# because the googleapiclient was found before the built-in libs; enabling embedded
+# launcher(b/135639220) has not been reliable and other issue will raise.
+# The workaround is repositioning the built-in libs before other 3rd libs in PYTHONPATH(sys.path)
+# to eliminate the symptom of failed loading http.client.
+import sysconfig
+sys.path.insert(0, os.path.dirname(sysconfig.get_paths()['purelib']))
+
+#pylint: disable=wrong-import-position
 from multiprocessing import Process
 
 import atest_arg_parser
+import atest_configs
 import atest_error
 import atest_execution_info
 import atest_utils
@@ -195,7 +205,8 @@ def get_extra_args(args):
                 'tf_debug': constants.TF_DEBUG,
                 'tf_template': constants.TF_TEMPLATE,
                 'user_type': constants.USER_TYPE,
-                'flakes_info': constants.FLAKES_INFO}
+                'flakes_info': constants.FLAKES_INFO,
+                'tf_early_device_release': constants.TF_EARLY_DEVICE_RELEASE}
     not_match = [k for k in arg_maps if k not in vars(args)]
     if not_match:
         raise AttributeError('%s object has no attribute %s'
@@ -242,8 +253,11 @@ def _validate_exec_mode(args, test_infos, host_tests=None):
     err_msg = None
     # In the case of '$atest <device-only> --host', exit.
     if (host_tests or args.host) and constants.DEVICE_TEST in all_device_modes:
-        err_msg = ('Test side and option(--host) conflict. Please remove '
-                   '--host if the test run on device side.')
+        device_only_tests = [x.test_name for x in test_infos
+                             if x.get_supported_exec_mode() == constants.DEVICE_TEST]
+        err_msg = ('Specified --host, but the following tests are device-only:\n  ' +
+                   '\n  '.join(sorted(device_only_tests)) + '\nPlease remove the option '
+                   'when running device-only tests.')
     # In the case of '$atest <host-only> <device-only> --host' or
     # '$atest <host-only> <device-only>', exit.
     if (constants.DEVICELESS_TEST in all_device_modes and
@@ -648,30 +662,28 @@ def acloud_create_validator(results_dir, args):
     Returns:
         If the target is valid:
             A tuple of (multiprocessing.Process,
-                        string of report file path,
-                        start time of acloud_create)
+                        string of report file path)
         else:
-            None, None, None
+            None, None
     """
     if not any((args.acloud_create, args.start_avd)):
-        return None, None, None
+        return None, None
     if args.start_avd:
         args.acloud_create = ['--num=1']
     acloud_args = ' '.join(args.acloud_create)
     target = os.getenv('TARGET_PRODUCT', "")
     if 'cf_x86' in target:
-        start = time.time()
         report_file = at.get_report_file(results_dir, acloud_args)
         acloud_proc = _run_multi_proc(
             func=ACLOUD_CREATE,
             args=[report_file],
             kwargs={'args':acloud_args,
                     'no_metrics_notice':args.no_metrics})
-        return acloud_proc, report_file, start
+        return acloud_proc, report_file
     atest_utils.colorful_print(
         '{} is not cf_x86 family; will not create any AVD.'.format(target),
         constants.RED)
-    return None, None, None
+    return None, None
 
 # pylint: disable=too-many-statements
 # pylint: disable=too-many-branches
@@ -697,7 +709,7 @@ def main(argv, results_dir, args):
         cwd=os.getcwd(),
         os=os_pyver)
     _non_action_validator(args)
-    proc_acloud, report_file, acloud_start = acloud_create_validator(results_dir, args)
+    proc_acloud, report_file = acloud_create_validator(results_dir, args)
     mod_info = module_info.ModuleInfo(force_build=args.rebuild_module_info)
     if args.rebuild_module_info:
         proc_idx = _run_multi_proc(INDEX_TARGETS)
@@ -707,9 +719,6 @@ def main(argv, results_dir, args):
     if args.list_modules:
         _print_testable_modules(mod_info, args.list_modules)
         return constants.EXIT_CODE_SUCCESS
-    # Clear cache if user pass -c option
-    if args.clear_cache:
-        atest_utils.clean_test_info_caches(args.tests)
     build_targets = set()
     test_infos = set()
     if _will_run_tests(args):
@@ -754,7 +763,9 @@ def main(argv, results_dir, args):
         if proc_acloud:
             proc_acloud.join()
             status = at.probe_acloud_status(report_file)
-            acloud_duration = time.time() - acloud_start
+            if status != 0:
+                return status
+            acloud_duration = at.get_acloud_duration(report_file)
             find_build_duration = find_duration + build_duration
             if find_build_duration - acloud_duration >= 0:
                 # find+build took longer, saved acloud create time.
@@ -770,8 +781,6 @@ def main(argv, results_dir, args):
                 metrics.LocalDetectEvent(
                     detect_type=constants.DETECT_TYPE_FIND_BUILD,
                     result=round(find_build_duration))
-            if status != 0:
-                return status
     elif constants.TEST_STEP not in steps:
         logging.warning('Install step without test step currently not '
                         'supported, installing AND testing instead.')
@@ -811,11 +820,11 @@ def main(argv, results_dir, args):
 
 if __name__ == '__main__':
     RESULTS_DIR = make_test_run_dir()
-    ARGS = _parse_args(sys.argv[1:])
-    with atest_execution_info.AtestExecutionInfo(sys.argv[1:],
-                                                 RESULTS_DIR,
-                                                 ARGS) as result_file:
-        if not ARGS.no_metrics:
+    atest_configs.GLOBAL_ARGS = _parse_args(sys.argv[1:])
+    with atest_execution_info.AtestExecutionInfo(
+            sys.argv[1:], RESULTS_DIR,
+            atest_configs.GLOBAL_ARGS) as result_file:
+        if not atest_configs.GLOBAL_ARGS.no_metrics:
             atest_utils.print_data_collection_notice()
             USER_FROM_TOOL = os.getenv(constants.USER_FROM_TOOL, '')
             if USER_FROM_TOOL == '':
@@ -823,7 +832,7 @@ if __name__ == '__main__':
             else:
                 metrics_base.MetricsBase.tool_name = USER_FROM_TOOL
 
-        EXIT_CODE = main(sys.argv[1:], RESULTS_DIR, ARGS)
+        EXIT_CODE = main(sys.argv[1:], RESULTS_DIR, atest_configs.GLOBAL_ARGS)
         DETECTOR = bug_detector.BugDetector(sys.argv[1:], EXIT_CODE)
         metrics.LocalDetectEvent(
             detect_type=constants.DETECT_TYPE_BUG_DETECTED,

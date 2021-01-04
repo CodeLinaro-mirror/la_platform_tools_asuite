@@ -33,6 +33,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 
 import atest_decorator
@@ -48,13 +49,16 @@ from tools.tradefederation.core.proto import test_record_pb2
 # the users to manually "pip3 install protobuf", therefore when the exception
 # occurs, we don't collect data and the tab completion is for args is silence.
 try:
+    from metrics import metrics
     from metrics import metrics_base
     from metrics import metrics_utils
-except ModuleNotFoundError:
+except ModuleNotFoundError as err:
     # This exception occurs only when invoking atest in source code.
     print("You shouldn't see this message unless you ran 'atest-src'."
           "To resolve the issue, please run:\n\t{}\n"
           "and try again.".format('pip3 install protobuf'))
+    print('Import error, %s', err)
+    print('sys.path: %s', sys.path)
     sys.exit(constants.IMPORT_FAILURE)
 
 _BASH_RESET_CODE = '\033[0m\n'
@@ -87,7 +91,8 @@ _FIND_MODIFIED_FILES_CMDS = (
     "| awk '{{print $1}}');"
     # Get the list of modified files from HEAD to previous $ahead generation.
     "git diff HEAD~$ahead --name-only")
-
+_TEST_WITH_MAINLINE_MODULES_RE = re.compile(
+    r'(?P<test>.*)\[(?P<mainline_modules>.*)\]')
 
 def get_build_cmd():
     """Compose build command with no-absolute path and flag "--make-mode".
@@ -121,6 +126,25 @@ def _capture_fail_section(full_log):
             am_capturing = True
             continue
     return capture_output
+
+
+def _capture_limited_output(full_log):
+    """Return the limited error message from capture_failed_section.
+
+    Args:
+        full_log: List of strings representing full output of build.
+
+    Returns:
+        output: List of strings that are build errors.
+    """
+    # Parse out the build error to output.
+    output = _capture_fail_section(full_log)
+    if not output:
+        output = full_log
+    if len(output) >= _FAILED_OUTPUT_LINE_LIMIT:
+        output = output[-_FAILED_OUTPUT_LINE_LIMIT:]
+    output = 'Output (may be trimmed):\n%s' % ''.join(output)
+    return output
 
 
 def _run_limited_output(cmd, env_vars=None):
@@ -162,14 +186,49 @@ def _run_limited_output(cmd, env_vars=None):
     # Wait for the Popen to finish completely before checking the returncode.
     proc.wait()
     if proc.returncode != 0:
-        # Parse out the build error to output.
-        output = _capture_fail_section(full_output)
+        # get error log from "OUT_DIR/error.log"
+        error_log_file = os.path.join(get_build_out_dir(), "error.log")
+        output = []
+        if os.path.isfile(error_log_file):
+            if os.stat(error_log_file).st_size > 0:
+                with open(error_log_file) as f:
+                    output = f.read()
         if not output:
-            output = full_output
-        if len(output) >= _FAILED_OUTPUT_LINE_LIMIT:
-            output = output[-_FAILED_OUTPUT_LINE_LIMIT:]
-        output = 'Output (may be trimmed):\n%s' % ''.join(output)
+            output = _capture_limited_output(full_output)
         raise subprocess.CalledProcessError(proc.returncode, cmd, output)
+
+
+def get_build_out_dir():
+    """Get android build out directory.
+
+    Returns:
+        String of the out directory.
+    """
+    build_top = os.environ.get(constants.ANDROID_BUILD_TOP)
+    # Get the out folder if user specified $OUT_DIR
+    custom_out_dir = os.environ.get(constants.ANDROID_OUT_DIR)
+    custom_out_dir_common_base = os.environ.get(
+        constants.ANDROID_OUT_DIR_COMMON_BASE)
+    user_out_dir = None
+    if custom_out_dir:
+        if os.path.isabs(custom_out_dir):
+            user_out_dir = custom_out_dir
+        else:
+            user_out_dir = os.path.join(build_top, custom_out_dir)
+    elif custom_out_dir_common_base:
+        # When OUT_DIR_COMMON_BASE is set, the output directory for each
+        # separate source tree is named after the directory holding the
+        # source tree.
+        build_top_basename = os.path.basename(build_top)
+        if os.path.isabs(custom_out_dir_common_base):
+            user_out_dir = os.path.join(custom_out_dir_common_base,
+                                        build_top_basename)
+        else:
+            user_out_dir = os.path.join(build_top, custom_out_dir_common_base,
+                                        build_top_basename)
+    if user_out_dir:
+        return user_out_dir
+    return os.path.join(build_top, "out")
 
 
 def build(build_targets, verbose=False, env_vars=None):
@@ -729,6 +788,7 @@ def has_valid_cert():
     except subprocess.CalledProcessError:
         return False
 
+# pylint: disable=too-many-locals
 def get_flakes(branch='',
                target='',
                test_name='',
@@ -761,11 +821,20 @@ def get_flakes(branch='',
                                  constants.FLAKE_FILE)
     if not os.path.exists(flake_service):
         logging.debug('Get flakes: Flake service path not exist.')
+        # Send (3, 0) to present no flakes info because service does not exist.
+        metrics.LocalDetectEvent(
+            detect_type=constants.DETECT_TYPE_NO_FLAKE,
+            result=0)
         return None
     if not has_valid_cert():
         logging.debug('Get flakes: No valid cert.')
+        # Send (3, 1) to present no flakes info because no valid cert.
+        metrics.LocalDetectEvent(
+            detect_type=constants.DETECT_TYPE_NO_FLAKE,
+            result=1)
         return None
     flake_info = {}
+    start = time.time()
     try:
         shutil.copy2(flake_service, constants.FLAKE_TMP_PATH)
         tmp_service = os.path.join(constants.FLAKE_TMP_PATH,
@@ -787,6 +856,12 @@ def get_flakes(branch='',
     except Exception as e:
         logging.debug('Exception:%s', e)
         return None
+    # Send (4, time) to present having flakes info and it spent time.
+    duration = round(time.time()-start)
+    logging.debug('Took %ss to get flakes info', duration)
+    metrics.LocalDetectEvent(
+        detect_type=constants.DETECT_TYPE_HAS_FLAKE,
+        result=duration)
     return flake_info
 
 def read_test_record(path):
@@ -813,3 +888,64 @@ def has_python_module(module_name):
         True if found, False otherwise.
     """
     return bool(importlib.util.find_spec(module_name))
+
+def is_valid_json_file(path):
+    """Detect if input path exist and content is valid.
+
+    Args:
+        path: The json file path.
+
+    Returns:
+        True if file exist and content is valid, False otherwise.
+    """
+    is_valid = False
+    try:
+        if os.path.isfile(path):
+            with open(path) as json_file:
+                json.load(json_file)
+            is_valid = True
+    except json.JSONDecodeError:
+        logging.warning('Exception happened while loading %s.', path)
+    return is_valid
+
+def get_manifest_branch():
+    """Get the manifest branch via repo info command.
+
+    Returns:
+        None if no system environment parameter ANDROID_BUILD_TOP or
+        running 'repo info' command error, otherwise the manifest branch
+    """
+    build_top = os.getenv(constants.ANDROID_BUILD_TOP, None)
+    if not build_top:
+        return None
+    try:
+        output = subprocess.check_output(
+            ['repo', 'info', '-o', constants.ASUITE_REPO_PROJECT_NAME],
+            cwd=build_top,
+            universal_newlines=True)
+        branch_re = re.compile(r'Manifest branch:\s*(?P<branch>.*)')
+        return branch_re.match(output).group('branch')
+    except subprocess.CalledProcessError:
+        logging.warning('Exception happened while getting branch')
+        return None
+
+def get_build_target():
+    """Get the build target form system environment TARGET_PRODUCT."""
+    return os.getenv(constants.ANDROID_TARGET_PRODUCT, None)
+
+def parse_mainline_modules(test):
+    """Parse test reference into test and mainline modules.
+
+    Args:
+        test: An String of test reference.
+
+    Returns:
+        A string of test without mainline modules,
+        A string of mainline modules.
+    """
+    result = _TEST_WITH_MAINLINE_MODULES_RE.match(test)
+    if not result:
+        return test, ""
+    test_wo_mainline_modules = result.group('test')
+    mainline_modules = result.group('mainline_modules')
+    return test_wo_mainline_modules, mainline_modules
