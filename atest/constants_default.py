@@ -70,6 +70,12 @@ EXIT_CODE_VERIFY_FAILURE = 6
 EXIT_CODE_OUTSIDE_ROOT = 7
 EXIT_CODE_AVD_CREATE_FAILURE = 8
 EXIT_CODE_AVD_INVALID_ARGS = 9
+# Conditions that atest should exit without sending result to metrics.
+EXIT_CODES_BEFORE_TEST = [EXIT_CODE_ENV_NOT_SETUP,
+                          EXIT_CODE_TEST_NOT_FOUND,
+                          EXIT_CODE_OUTSIDE_ROOT,
+                          EXIT_CODE_AVD_CREATE_FAILURE,
+                          EXIT_CODE_AVD_INVALID_ARGS]
 
 # Codes of specific events. These are exceptions that don't stop anything
 # but sending metrics.
@@ -91,6 +97,7 @@ MODULE_CLASS_JAVA_LIBRARIES = 'JAVA_LIBRARIES'
 MODULE_TEST_CONFIG = 'test_config'
 MODULE_MAINLINE_MODULES = 'test_mainline_modules'
 MODULE_DEPENDENCIES = 'dependencies'
+MODULE_SRCS = 'srcs'
 
 # Env constants
 ANDROID_BUILD_TOP = 'ANDROID_BUILD_TOP'
@@ -250,6 +257,8 @@ ATEST_RESULT_ROOT = '/tmp/atest_result'
 ATEST_TEST_RECORD_PROTO = 'test_record.proto'
 LATEST_RESULT_FILE = os.path.join(ATEST_RESULT_ROOT, 'LATEST', 'test_result')
 ACLOUD_REPORT_FILE_RE = re.compile(r'.*--report[_-]file(=|\s+)(?P<report_file>[\w/.]+)')
+TEST_WITH_MAINLINE_MODULES_RE = re.compile(r'(?P<test>.*)\[(?P<mainline_modules>.*'
+                                           r'[.](apk|apks|apex))\]$')
 
 # Tests list which need vts_kernel_tests as test dependency
 REQUIRED_KERNEL_TEST_MODULES = [

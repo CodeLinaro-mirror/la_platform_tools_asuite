@@ -19,6 +19,7 @@
 
 from __future__ import print_function
 
+import fnmatch
 import json
 import logging
 import os
@@ -129,8 +130,12 @@ class CLITranslator:
             if found_test_infos:
                 finder_info = finder.finder_info
                 for test_info in found_test_infos:
-                    # TODO (b/172984228): Add back get build dependency.
                     test_deps = set()
+                    if self.mod_info:
+                        test_deps = self.mod_info.get_module_dependency(
+                            test_info.test_name)
+                        logging.debug('(%s) Test dependencies: %s',
+                                      test_info.test_name, test_deps)
                     if tm_test_detail:
                         test_info.data[constants.TI_MODULE_ARG] = (
                             tm_test_detail.options)
@@ -143,7 +148,12 @@ class CLITranslator:
                         x for x in test_info.build_targets
                         if x not in test_modules_to_build}
                     test_info.build_targets.update(mm_build_targets)
-                    test_info.build_targets.update(test_deps)
+                    # Only add dependencies to build_targets when they are in
+                    # module info
+                    test_deps_in_mod_info = [
+                        test_dep for test_dep in test_deps
+                        if self.mod_info.is_module(test_dep)]
+                    test_info.build_targets.update(test_deps_in_mod_info)
                     test_infos.add(test_info)
                 test_found = True
                 print("Found '%s' as %s" % (
@@ -347,6 +357,13 @@ class CLITranslator:
                 grouped_tests = all_tests.setdefault(test_group_name, set())
                 tests = []
                 for test in test_list:
+                    # TODO: uncomment below when atest support testing mainline
+                    # module in TEST_MAPPING files.
+                    if constants.TEST_WITH_MAINLINE_MODULES_RE.match(test['name']):
+                        logging.debug('Skipping mainline module: %s',
+                                      atest_utils.colorize(test['name'],
+                                                           constants.RED))
+                        continue
                     if (self.enable_file_patterns and
                             not test_mapping.is_match_file_patterns(
                                 test_mapping_file, test)):
@@ -541,6 +558,31 @@ class CLITranslator:
         test_names = [detail.name for detail in test_details_list]
         return test_names, test_details_list
 
+    def _extract_testable_modules_by_wildcard(self, user_input):
+        """Extract the given string with wildcard symbols to testable
+        module names.
+
+        Assume the available testable modules is:
+            ['Google', 'google', 'G00gle', 'g00gle']
+        and the user_input is:
+            ['*oo*', 'g00gle']
+        This method will return:
+            ['Google', 'google', 'g00gle']
+
+        Args:
+            user_input: A list of input.
+
+        Returns:
+            A list of testable modules.
+        """
+        testable_mods = self.mod_info.get_testable_modules()
+        extracted_tests = []
+        for test in user_input:
+            if atest_utils.has_wildcard(test):
+                extracted_tests.extend(fnmatch.filter(testable_mods, test))
+            else:
+                extracted_tests.append(test)
+        return extracted_tests
 
     def translate(self, args):
         """Translate atest command line into build targets and run commands.
@@ -564,6 +606,9 @@ class CLITranslator:
         # Clear cache if user pass -c option
         if args.clear_cache:
             atest_utils.clean_test_info_caches(tests)
+        # Process tests which might contain wildcard symbols in advance.
+        if atest_utils.has_wildcard(tests):
+            tests = self._extract_testable_modules_by_wildcard(tests)
         test_infos = self._get_test_infos(tests, test_details_list,
                                           args.rebuild_module_info)
         logging.debug('Found tests in %ss', time.time() - start)
