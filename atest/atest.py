@@ -125,6 +125,8 @@ def _configure_logging(verbose):
     Args:
         verbose: A boolean. If true display DEBUG level logs.
     """
+    # Clear the handlers to prevent logging.basicConfig from being called twice.
+    logging.getLogger('').handlers = []
     log_format = '%(asctime)s %(filename)s:%(lineno)s:%(levelname)s: %(message)s'
     datefmt = '%Y-%m-%d %H:%M:%S'
     if verbose:
@@ -754,6 +756,9 @@ def main(argv, results_dir, args):
             targets=build_targets)
         if not success:
             return constants.EXIT_CODE_BUILD_FAILURE
+        # Always reload module-info after build finish.
+        # TODO(b/178675689) Move it to a thread when running test.
+        mod_info.generate_atest_merged_dep_file()
         if proc_acloud:
             proc_acloud.join()
             status = at.probe_acloud_status(report_file)

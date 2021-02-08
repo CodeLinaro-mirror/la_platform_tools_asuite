@@ -49,8 +49,8 @@ _CC_CLASS_METHOD_RE = re.compile(
 _PARA_CC_CLASS_RE = re.compile(
     r'^\s*INSTANTIATE[_TYPED]*_TEST_(SUITE|CASE)_P\s*\(\s*(?P<instantiate>\w+)\s*,'
     r'\s*(?P<class>\w+)\s*\,', re.M)
-# Group that matches java method.
-_JAVA_METHODS_RE = r'.*\s+void\s+(?P<methods>\w+)\(\)'
+# Group that matches java/kt method.
+_JAVA_METHODS_RE = r'.*\s+(fun|void)\s+(?P<methods>\w+)\(\)'
 # Parse package name from the package declaration line of a java or
 # a kotlin file.
 # Group matches "foo.bar" of line "package foo.bar;" or "package foo.bar"
@@ -270,7 +270,7 @@ def has_method_in_file(test_path, methods):
         return False
     if constants.JAVA_EXT_RE.match(test_path):
         # omit parameterized pattern: method[0]
-        _methods = set(re.sub(r'\[\d+\]', '', x) for x in methods)
+        _methods = set(re.sub(r'\[\S+\]', '', x) for x in methods)
         if _methods.issubset(get_java_methods(test_path)):
             return True
         parent = get_parent_cls_name(test_path)
@@ -565,7 +565,10 @@ def find_parent_module_dir(root_dir, start_dir, module_info):
             if module_info.is_robolectric_module(mod):
                 return rel_dir
             for test_config in mod.get(constants.MODULE_TEST_CONFIG, []):
-                if os.path.isfile(os.path.join(root_dir, test_config)):
+                # If the test config doesn's exist until it was auto-generated
+                # in the build time(under <android_root>/out), atest still
+                # recognizes it testable.
+                if test_config:
                     return rel_dir
             if mod.get('auto_test_config'):
                 auto_gen_dir = rel_dir
@@ -1066,8 +1069,12 @@ def get_java_methods(test_path):
     """
     with open(test_path) as class_file:
         content = class_file.read()
-        matches = re.findall(_JAVA_METHODS_RE, content)
-    return set(matches) if matches else None
+    matches = re.findall(_JAVA_METHODS_RE, content)
+    if matches:
+        methods = {match[1] for match in matches}
+        logging.debug('Available methods: %s', methods)
+        return methods
+    return set()
 
 
 def get_cc_test_classes_methods(test_path):
