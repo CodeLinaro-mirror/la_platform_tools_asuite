@@ -21,7 +21,9 @@ Module Info class used to hold cached module-info.json.
 import json
 import logging
 import os
+import shutil
 import sys
+import tempfile
 
 import atest_utils
 import constants
@@ -452,10 +454,16 @@ class ModuleInfo:
                     name_to_module_info[
                         module_name][merge_item] = mod_info_values
         output_file = self.get_atest_merged_info_path()
-        if os.path.isdir(os.path.dirname(output_file)):
-            logging.debug('Writing %s', output_file)
-            with open(output_file, 'w') as file_out:
-                json.dump(name_to_module_info, file_out, indent=0)
+        if not os.path.isdir(os.path.dirname(output_file)):
+            os.makedirs(os.path.dirname(output_file))
+        # b/178559543 saving merged module info in a temp file and copying it to
+        # atest_merged_dep.json can eliminate the possibility of accessing it
+        # concurrently and resulting in invalid JSON format.
+        temp_file = tempfile.NamedTemporaryFile()
+        with open(temp_file.name, 'w') as _temp:
+            json.dump(name_to_module_info, _temp, indent=0)
+        shutil.copy(temp_file.name, output_file)
+        temp_file.close()
         return name_to_module_info
 
     def get_module_dependency(self, module_name, parent_dependencies=None):
@@ -484,7 +492,6 @@ class ModuleInfo:
             deps = deps.union(set(self.get_module_dependency(
                 mod_dep, parent_dependencies=parent_dependencies.union(deps))))
         return deps
-
 
     @staticmethod
     def get_atest_merged_info_path():
@@ -542,3 +549,23 @@ class ModuleInfo:
         return (force_build or
                 (self.has_soong_info() and
                  not os.path.exists(self.get_atest_merged_info_path())))
+
+    def is_unit_test(self, mod_info):
+        """Return True if input module is unit test, False otherwise.
+
+        Args:
+            mod_info: ModuleInfo to check.
+
+        Returns:
+            True if if input module is unit test, False otherwise.
+        """
+        return mod_info.get(constants.MODULE_IS_UNIT_TEST, '') == 'true'
+
+    def get_all_unit_tests(self):
+        """Get a list of all the module names which are unit tests."""
+        unit_tests = []
+        for mod_name, mod_info in self.name_to_module_info.items():
+            if mod_info.get(constants.MODULE_NAME, '') == mod_name:
+                if self.is_unit_test(mod_info):
+                    unit_tests.append(mod_name)
+        return unit_tests
