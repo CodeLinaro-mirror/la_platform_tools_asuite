@@ -25,10 +25,8 @@ import re
 import select
 import shutil
 import socket
-import uuid
 
 from functools import partial
-from pathlib import Path
 
 import atest_utils
 import constants
@@ -108,7 +106,12 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
             LD_LIBRARY_PATH for TF to load the correct local shared libraries.
         """
         out_dir = os.environ.get(constants.ANDROID_HOST_OUT, '')
-        lib_dirs = ['lib', 'lib64']
+        # From b/188179058, if a 64bit tests, it will break the tests due to the
+        # elf format is not 64bit for the lib path. But for b/160741384, it is
+        # ok to load lib path first. Change the lib_dirs sequence to lib64 first
+        # due to ATest by default only testing the main abi and even a 32bit
+        # only target the lib64 folder is actually not exist.
+        lib_dirs = ['lib64', 'lib']
         path = ''
         for lib in lib_dirs:
             lib_dir = os.path.join(out_dir, lib)
@@ -155,7 +158,7 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
         # running tests.
         self._try_set_gts_authentication_key()
         result = 0
-        creds, inv = self._do_upload_flow(extra_args)
+        creds, inv = atest_gcp_utils.do_upload_flow(extra_args)
         try:
             if os.getenv(test_runner_base.OLD_OUTPUT_ENV_VAR):
                 result = self.run_tests_raw(test_infos, extra_args, reporter)
@@ -173,126 +176,6 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
                 finally:
                     logging.disable(logging.NOTSET)
         return result
-
-    def _do_upload_flow(self, extra_args):
-        """Run upload flow.
-
-        Asking user's decision and do the related steps.
-
-        Args:
-            extra_args: Dict of extra args to add to test run.
-        Return:
-            tuple(invocation, workunit)
-        """
-        config_folder = os.path.join(os.path.expanduser('~'), '.atest')
-        creds = self._request_consent_of_upload_test_result(
-            config_folder,
-            extra_args.get(constants.REQUEST_UPLOAD_RESULT, None))
-        if creds:
-            inv, workunit = self._prepare_data(creds)
-            extra_args[constants.INVOCATION_ID] = inv['invocationId']
-            extra_args[constants.WORKUNIT_ID] = workunit['id']
-            if not os.path.exists(os.path.dirname(constants.TOKEN_FILE_PATH)):
-                os.makedirs(os.path.dirname(constants.TOKEN_FILE_PATH))
-            with open(constants.TOKEN_FILE_PATH, 'w') as token_file:
-                token_file.write(creds.token_response['access_token'])
-            return creds, inv
-        return None, None
-
-    def _prepare_data(self, creds):
-        """Prepare data for build api using.
-
-        Args:
-            creds: The credential object.
-        Return:
-            invocation and workunit object.
-        """
-        try:
-            logging.disable(logging.INFO)
-            external_id = str(uuid.uuid4())
-            client = logstorage_utils.BuildClient(creds)
-            branch = self._get_branch(client)
-            target = self._get_target(branch, client)
-            build_record = client.insert_local_build(external_id,
-                                                     target,
-                                                     branch)
-            client.insert_build_attempts(build_record)
-            invocation = client.insert_invocation(build_record)
-            workunit = client.insert_work_unit(invocation)
-            return invocation, workunit
-        finally:
-            logging.disable(logging.NOTSET)
-
-    def _get_branch(self, build_client):
-        """Get source code tree branch.
-
-        Args:
-            build_client: The build client object.
-        Return:
-            "git_master" in internal git, "aosp-master" otherwise.
-        """
-        default_branch = ('git_master'
-                          if constants.CREDENTIAL_FILE_NAME else 'aosp-master')
-        local_branch = atest_utils.get_manifest_branch()
-        branches = [b['name'] for b in build_client.list_branch()['branches']]
-        return local_branch if local_branch in branches else default_branch
-
-    def _get_target(self, branch, build_client):
-        """Get local build selected target.
-
-        Args:
-            branch: The branch want to check.
-            build_client: The build client object.
-        Return:
-            The matched build target, "aosp_x86-userdebug" otherwise.
-        """
-        default_target = 'aosp_x86-userdebug'
-        local_target = atest_utils.get_build_target()
-        targets = [t['target']
-                   for t in build_client.list_target(branch)['targets']]
-        return local_target if local_target in targets else default_target
-
-    def _request_consent_of_upload_test_result(self, config_folder,
-                                               request_to_upload_result):
-        """Request the consent of upload test results at the first time.
-
-        Args:
-            config_folder: The directory path to put config file.
-            request_to_upload_result: Prompt message for user determine.
-        Return:
-            The credential object.
-        """
-        if not os.path.exists(config_folder):
-            os.makedirs(config_folder)
-        not_upload_file = os.path.join(config_folder,
-                                       constants.DO_NOT_UPLOAD)
-        # Do nothing if there are no related config or DO_NOT_UPLOAD exists.
-        if (not constants.CREDENTIAL_FILE_NAME or
-                not constants.TOKEN_FILE_PATH):
-            return None
-
-        creds_f = os.path.join(config_folder, constants.CREDENTIAL_FILE_NAME)
-        if request_to_upload_result:
-            if os.path.exists(not_upload_file):
-                os.remove(not_upload_file)
-            if os.path.exists(creds_f):
-                os.remove(creds_f)
-
-        # If the credential file exists or the user says “Yes”, ATest will
-        # try to get the credential from the file, else will create a
-        # DO_NOT_UPLOAD to keep the user's decision.
-        if not os.path.exists(not_upload_file):
-            if (os.path.exists(creds_f) or
-                    (request_to_upload_result and
-                     atest_utils.prompt_with_yn_result(
-                         constants.UPLOAD_TEST_RESULT_MSG, False))):
-                return atest_gcp_utils.GCPHelper(
-                    client_id=constants.CLIENT_ID,
-                    client_secret=constants.CLIENT_SECRET,
-                    user_agent='atest').get_credential_with_auth_flow(creds_f)
-
-        Path(not_upload_file).touch()
-        return None
 
     def run_tests_raw(self, test_infos, extra_args, reporter):
         """Run the list of test_infos. See base class for more.
@@ -577,14 +460,14 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
             if constants.FLAKES_INFO == arg:
                 continue
             if constants.INSTANT == arg:
-                args_to_append.append('--enable-parameterized-modules')
-                args_to_append.append('--module-parameter')
+                args_to_append.append(constants.TF_ENABLE_PARAMETERIZED_MODULES)
+                args_to_append.append(constants.TF_MODULE_PARAMETER)
                 args_to_append.append('instant_app')
                 continue
             if constants.USER_TYPE == arg:
-                args_to_append.append('--enable-parameterized-modules')
+                args_to_append.append(constants.TF_ENABLE_PARAMETERIZED_MODULES)
                 args_to_append.append('--enable-optional-parameterization')
-                args_to_append.append('--module-parameter')
+                args_to_append.append(constants.TF_MODULE_PARAMETER)
                 args_to_append.append(extra_args[arg])
                 continue
             if constants.ITERATIONS == arg:
@@ -608,13 +491,17 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
             if constants.COLLECT_TESTS_ONLY == arg:
                 args_to_append.append('--collect-tests-only')
                 continue
+            if constants.NO_ENABLE_ROOT == arg:
+                args_to_append.append('--no-enable-root')
+                continue
             if constants.TF_DEBUG == arg:
                 print("Please attach process to your IDE...")
                 continue
             if arg in (constants.TF_TEMPLATE,
                        constants.TF_EARLY_DEVICE_RELEASE,
                        constants.INVOCATION_ID,
-                       constants.WORKUNIT_ID):
+                       constants.WORKUNIT_ID,
+                       constants.REQUEST_UPLOAD_RESULT):
                 continue
             args_not_supported.append(arg)
         # Set exclude instant app annotation for non-instant mode run.
@@ -626,12 +513,18 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
                     tf_class=constants.TF_AND_JUNIT_CLASS,
                     option_name=constants.TF_EXCLUDE_ANNOTATE,
                     option_value=constants.INSTANT_MODE_ANNOTATE))
+        # Force append --enable-parameterized-modules if args_to_append has
+        # --module-parameter in args_to_append
+        if constants.TF_MODULE_PARAMETER in args_to_append:
+            if constants.TF_ENABLE_PARAMETERIZED_MODULES not in args_to_append:
+                args_to_append.append(constants.TF_ENABLE_PARAMETERIZED_MODULES)
         # If test config has config with auto enable parameter, force exclude
         # those default parameters(ex: instant_app, secondary_user)
-        if '--enable-parameterized-modules' not in args_to_append:
+        if constants.TF_ENABLE_PARAMETERIZED_MODULES not in args_to_append:
             for tinfo in test_infos:
                 if self._is_parameter_auto_enabled_cfg(tinfo, self.module_info):
-                    args_to_append.append('--enable-parameterized-modules')
+                    args_to_append.append(
+                        constants.TF_ENABLE_PARAMETERIZED_MODULES)
                     for exclude_parameter in constants.DEFAULT_EXCLUDE_PARAS:
                         args_to_append.append('--exclude-module-parameters')
                         args_to_append.append(exclude_parameter)
@@ -685,6 +578,10 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
         if extra_args.get(constants.WORKUNIT_ID, None):
             test_args.append('--invocation-data work_unit_id=%s'
                              % extra_args[constants.WORKUNIT_ID])
+        for info in test_infos:
+            if constants.TEST_WITH_MAINLINE_MODULES_RE.match(info.test_name):
+                test_args.append(constants.TF_ENABLE_MAINLINE_PARAMETERIZED_MODULES)
+                break
         # For detailed logs, set TF options log-level/log-level-display as
         # 'VERBOSE' by default.
         log_level = 'VERBOSE'

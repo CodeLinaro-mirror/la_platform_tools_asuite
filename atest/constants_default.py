@@ -54,12 +54,14 @@ ITERATIONS = 'ITERATIONS'
 RERUN_UNTIL_FAILURE = 'RERUN_UNTIL_FAILURE'
 RETRY_ANY_FAILURE = 'RETRY_ANY_FAILURE'
 TF_DEBUG = 'TF_DEBUG'
+DEFAULT_DEBUG_PORT = '10888'
 COLLECT_TESTS_ONLY = 'COLLECT_TESTS_ONLY'
 TF_TEMPLATE = 'TF_TEMPLATE'
 FLAKES_INFO = 'FLAKES_INFO'
 TF_EARLY_DEVICE_RELEASE = 'TF_EARLY_DEVICE_RELEASE'
 REQUEST_UPLOAD_RESULT = 'REQUEST_UPLOAD_RESULT'
 MODULES_IN = 'MODULES-IN-'
+NO_ENABLE_ROOT = 'NO_ENABLE_ROOT'
 
 # Application exit codes.
 EXIT_CODE_SUCCESS = 0
@@ -110,6 +112,7 @@ ANDROID_OUT_DIR_COMMON_BASE = 'OUT_DIR_COMMON_BASE'
 ANDROID_HOST_OUT = 'ANDROID_HOST_OUT'
 ANDROID_PRODUCT_OUT = 'ANDROID_PRODUCT_OUT'
 ANDROID_TARGET_PRODUCT = 'TARGET_PRODUCT'
+TARGET_BUILD_VARIANT = 'TARGET_BUILD_VARIANT'
 
 # Test Info data keys
 # Value of include-filter option.
@@ -130,7 +133,8 @@ TEST_GROUP_PRESUBMIT = 'presubmit'
 TEST_GROUP_PRESUBMIT_LARGE = 'presubmit-large'
 TEST_GROUP_POSTSUBMIT = 'postsubmit'
 TEST_GROUP_ALL = 'all'
-DEFAULT_TEST_GROUPS = [TEST_GROUP_PRESUBMIT, TEST_GROUP_PRESUBMIT_LARGE]
+DEFAULT_TEST_GROUPS = [TEST_GROUP_PRESUBMIT,
+                       TEST_GROUP_PRESUBMIT_LARGE]
 # Key in TEST_MAPPING file for a list of imported TEST_MAPPING file
 TEST_MAPPING_IMPORTS = 'imports'
 
@@ -146,6 +150,9 @@ TF_MODULE_ARG_VALUE_FMT = '{test_name}:{option_name}:{option_value}'
 TF_SUITE_FILTER_ARG_VALUE_FMT = '"{test_name} {option_value}"'
 TF_SKIP_LOADING_CONFIG_JAR = '--skip-loading-config-jar'
 TF_MODULE_FILTER = '--module'
+TF_ENABLE_MAINLINE_PARAMETERIZED_MODULES = '--enable-mainline-parameterized-modules'
+TF_ENABLE_PARAMETERIZED_MODULES = '--enable-parameterized-modules'
+TF_MODULE_PARAMETER = '--module-parameter'
 
 # Suite Plans
 SUITE_PLANS = frozenset(['cts'])
@@ -185,7 +192,9 @@ CONTRIBUTOR_AGREEMENT_URL = {
 PRIVACY_POLICY_URL = 'https://policies.google.com/privacy'
 TERMS_SERVICE_URL = 'https://policies.google.com/terms'
 TOOL_NAME = 'atest'
+SUB_TOOL_NAME = ''
 USER_FROM_TOOL = 'USER_FROM_TOOL'
+USER_FROM_SUB_TOOL = 'USER_FROM_SUB_TOOL'
 TF_PREPARATION = 'tf-preparation'
 
 # Detect type for local_detect_event.
@@ -223,6 +232,12 @@ VTS_CORE_TF_MODULE = 'vts-tradefed'
 
 # VTS suite set
 VTS_CORE_SUITE = 'vts'
+
+# MTS suite set
+MTS_SUITE = 'mts'
+
+# CTS tradefed jar
+CTS_JAR = "cts-tradefed"
 
 # ATest TF
 ATEST_TF_MODULE = 'atest-tradefed'
@@ -335,6 +350,7 @@ SUPPORTED_FILTERS = [INCLUDE_ANNOTATION, EXCLUDE_ANNOTATION]
 # Tradefed config-descriptor metadata.
 CONFIG_DESCRIPTOR = 'config-descriptor:metadata'
 PARAMETER_KEY = 'parameter'
+MAINLINE_PARAM_KEY = 'mainline-param'
 
 # Tradefed related constant.
 TF_TEST_ARG = '--test-arg'
