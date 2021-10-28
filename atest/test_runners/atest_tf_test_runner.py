@@ -28,6 +28,7 @@ import socket
 
 from functools import partial
 
+import atest_error
 import atest_utils
 import constants
 import result_reporter
@@ -160,9 +161,19 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
         result = 0
         creds, inv = atest_gcp_utils.do_upload_flow(extra_args)
         try:
+            verify_key = atest_utils.get_verify_key([test_infos[0].test_name],
+                                                    extra_args)
+            if extra_args.get(constants.VERIFY_ENV_VARIABLE, False):
+                # check environment variables.
+                atest_utils.handle_test_env_var(
+                    verify_key, result_path=constants.VERIFY_ENV_PATH)
+                return 0
             if os.getenv(test_runner_base.OLD_OUTPUT_ENV_VAR):
                 result = self.run_tests_raw(test_infos, extra_args, reporter)
             result = self.run_tests_pretty(test_infos, extra_args, reporter)
+        except atest_error.DryRunVerificationError as e:
+            atest_utils.colorful_print(str(e), constants.RED)
+            return constants.EXIT_CODE_VERIFY_FAILURE
         finally:
             if inv:
                 try:
@@ -457,6 +468,8 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
                 continue
             if constants.DRY_RUN == arg:
                 continue
+            if constants.VERIFY_ENV_VARIABLE == arg:
+                continue
             if constants.FLAKES_INFO == arg:
                 continue
             if constants.INSTANT == arg:
@@ -613,6 +626,9 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
         self.run_cmd_dict['args'] = ' '.join(test_args)
         self.run_cmd_dict['tf_customize_template'] = (
             self._extract_customize_tf_templates(extra_args))
+
+        # Copy symbols if there are tests belong to native test.
+        self._handle_native_tests(test_infos)
         return [self._RUN_CMD.format(**self.run_cmd_dict)]
 
     def _flatten_test_infos(self, test_infos):
@@ -860,3 +876,18 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
                 - constants.DEFAULT_EXCLUDE_NOT_PARAS):
                 return True
         return False
+
+    def _handle_native_tests(self, test_infos):
+        """Handling some extra tasks for running native tests from tradefed.
+
+        Args:
+            test_infos: A set of TestInfo instances.
+        """
+        for tinfo in test_infos:
+            test_config, _ = test_finder_utils.get_test_config_and_srcs(
+                tinfo, self.module_info)
+            if test_config:
+                module_name, device_path = atest_utils.get_config_gtest_args(
+                    test_config)
+                if module_name and device_path:
+                    atest_utils.copy_native_symbols(module_name, device_path)
