@@ -27,10 +27,22 @@ def _tradefed_deviceless_test_impl(ctx):
             tradefed_classpath.append(_BAZEL_WORK_DIR + f.short_path)
     tradefed_classpath = ":".join(tradefed_classpath)
 
-    shared_lib_paths = []
-    for shared_lib in ctx.attr.test[0][TradefedTestInfo].shared_libs:
-        shared_lib_paths.append(_BAZEL_WORK_DIR + shared_lib.dirname)
-    shared_lib_paths = ":".join(shared_lib_paths)
+    dep_runfiles = _collect_runfiles(
+        ctx,
+        _flatten([
+            ctx.attr.test,
+            ctx.attr._tradefed_classpath_jars,
+            ctx.attr._atest_tradefed_launcher,
+            ctx.attr._atest_helper,
+            ctx.attr._adb,
+        ]),
+    )
+
+    shared_lib_dirs = []
+    for f in dep_runfiles.files.to_list():
+        if f.extension == "so":
+            shared_lib_dirs.append(_BAZEL_WORK_DIR + f.dirname)
+    shared_lib_dirs = ":".join(shared_lib_dirs)
 
     script = ctx.actions.declare_file("tradefed_test_%s.sh" % ctx.label.name)
     ctx.actions.expand_template(
@@ -40,9 +52,10 @@ def _tradefed_deviceless_test_impl(ctx):
         substitutions = {
             "{module_name}": ctx.attr.test[0][TradefedTestInfo].module_name,
             "{atest_tradefed_launcher}": _BAZEL_WORK_DIR + ctx.file._atest_tradefed_launcher.short_path,
+            "{atest_helper}": _BAZEL_WORK_DIR + ctx.file._atest_helper.short_path,
             "{tradefed_tests_dir}": _BAZEL_WORK_DIR + ctx.attr.test[0].label.package,
             "{tradefed_classpath}": tradefed_classpath,
-            "{shared_lib_paths}": shared_lib_paths,
+            "{shared_lib_dirs}": shared_lib_dirs,
             "{path_additions}": _BAZEL_WORK_DIR + ctx.file._adb.dirname,
         },
     )
@@ -50,14 +63,14 @@ def _tradefed_deviceless_test_impl(ctx):
     runfiles = ctx.runfiles(
         transitive_files = depset(transitive = [
             depset(ctx.files._atest_tradefed_launcher),
+            depset(ctx.files._atest_helper),
             depset(ctx.files._tradefed_classpath_jars),
-            depset(ctx.attr.test[0][TradefedTestInfo].shared_libs),
             depset(ctx.attr.test[0][TradefedTestInfo].test_binaries),
             depset(ctx.attr.test[0][TradefedTestInfo].test_configs),
-            depset(ctx.files._atest_deps),
             depset(ctx.files._adb),
         ]),
     )
+    runfiles = runfiles.merge(dep_runfiles)
 
     return [DefaultInfo(executable = script, runfiles = runfiles)]
 
@@ -77,19 +90,17 @@ tradefed_deviceless_test = rule(
             cfg = host_transition,
         ),
         "_atest_tradefed_launcher": attr.label(
-            default = "//tools/asuite/atest:atest-tradefed-launcher",
+            default = "//tools/asuite/atest:atest_tradefed.sh",
             allow_single_file = True,
             cfg = host_transition,
         ),
-        "_atest_deps": attr.label_list(
-            default = [
-                "//tools/asuite/atest:atest-script-help",
-            ],
-            allow_files = True,
+        "_atest_helper": attr.label(
+            default = "//tools/asuite/atest:atest_script_help.sh",
+            allow_single_file = True,
             cfg = host_transition,
         ),
         "_adb": attr.label(
-            default = "//system/core/adb:adb",
+            default = "//packages/modules/adb:adb",
             allow_single_file = True,
             cfg = host_transition,
         ),
@@ -109,3 +120,10 @@ tradefed_deviceless_test = rule(
     implementation = _tradefed_deviceless_test_impl,
     doc = "A rule used to run host-side deviceless tests using Tradefed",
 )
+
+def _collect_runfiles(ctx, targets):
+    all_runfiles = [t[DefaultInfo].default_runfiles for t in targets if t[DefaultInfo]]
+    return ctx.runfiles().merge_all(all_runfiles)
+
+def _flatten(deps):
+    return [t for d in deps for t in d]

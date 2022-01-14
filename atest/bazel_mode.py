@@ -22,13 +22,14 @@ sandboxing, caching, and remote execution.
 # pylint: disable=missing-function-docstring
 # pylint: disable=missing-class-docstring
 
+import dataclasses
 import os
 import shutil
 
 from abc import ABC, abstractmethod
-from collections import defaultdict, namedtuple, OrderedDict
+from collections import defaultdict, OrderedDict
 from pathlib import Path
-from typing import Any, Dict, IO, List, Set
+from typing import Any, Dict, IO, List, Set, Callable
 
 import atest_utils
 import constants
@@ -75,14 +76,6 @@ class WorkspaceGenerator:
         self.mod_info_md5_path = self.workspace_out_path.joinpath(
             'mod_info_md5')
         self.path_to_package = {}
-        self.prerequisite_modules = {
-            'tradefed',
-            'tradefed-contrib',
-            'tradefed-test-framework',
-            'atest-tradefed',
-            'atest_tradefed.sh',
-            'atest_script_help.sh',
-        }
 
     def generate(self):
         """Generate the Bazel workspace if mod_info doesn't exist or stale."""
@@ -97,7 +90,7 @@ class WorkspaceGenerator:
             # files in the workspace that could interfere with execution.
             shutil.rmtree(self.workspace_out_path)
 
-        self._add_prerequisite_module_targets()
+        self._add_test_module_targets()
 
         self.workspace_out_path.mkdir(parents=True)
         self._generate_artifacts()
@@ -105,19 +98,77 @@ class WorkspaceGenerator:
         atest_utils.save_md5([str(self.mod_info.mod_info_file_path)],
                              self.mod_info_md5_path)
 
-    def _add_prerequisite_module_targets(self):
-        for module_name in self.prerequisite_modules:
-            self._add_soong_prebuilt_target(module_name)
+    def _add_test_module_targets(self):
+        for name, info in self.mod_info.name_to_module_info.items():
+            # Ignore modules that have a 'host_cross_' prefix since they are
+            # duplicates of existing modules. For example,
+            # 'host_cross_aapt2_tests' is a duplicate of 'aapt2_tests'. We also
+            # ignore modules with a '_32' suffix since these also are redundant
+            # given that modules have both 32 and 64-bit variants built by
+            # default. See b/77288544#comment6 and b/23566667 for more context.
+            if name.endswith("_32") or name.startswith("host_cross_"):
+                continue
+            if not self.is_host_unit_test(info):
+                continue
+            if not self.mod_info.is_testable_module(info):
+                continue
+            self._add_deviceless_test_target(info)
 
-    def _add_soong_prebuilt_target(self, module_name: str):
-        info = self._get_module_info(module_name)
-        path = self._get_module_path(module_name, info)
+    def _add_target(self, package_path: str, target_name: str,
+                    create_fn: Callable) -> 'Target':
+        package = self.path_to_package.setdefault(package_path,
+                                                  Package(package_path))
+        target = package.get_target(target_name)
 
-        package = self.path_to_package.setdefault(path, Package(path))
-        package.add_target(SoongPrebuiltTarget.create(
-            self, info, self.mod_info.is_testable_module(info)))
+        if target:
+            return target
 
-    def _get_module_info(self, module_name: str) -> {str:[str]}:
+        target = create_fn()
+        package.add_target(target)
+        return target
+
+    def _add_prebuilt_target_by_module_name(self, module_name: str):
+        self._add_prebuilt_target(self._get_module_info(module_name))
+
+    def _add_prebuilt_target(self, info: Dict[str, Any]) -> 'Target':
+        package_name = self._get_module_path(info)
+        name = info['module_name']
+
+        def create():
+            runtime_dep_targets = []
+
+            for lib_name in info.get(constants.MODULE_SHARED_LIBS, []):
+                lib_info = self._get_module_info(lib_name)
+                if not lib_info.get(constants.MODULE_INSTALLED):
+                    continue
+                runtime_dep_targets.append(self._add_prebuilt_target(lib_info))
+
+            return SoongPrebuiltTarget.create(
+                self,
+                info,
+                package_name,
+                self.mod_info.is_testable_module(info),
+                runtime_dep_targets
+            )
+
+        return self._add_target(package_name, name, create)
+
+    def _add_deviceless_test_target(self, info: Dict[str, Any]) -> 'Target':
+        package_name = self._get_module_path(info)
+        name = info['module_name'] + "_host"
+
+        def create():
+            for prerequisite in DevicelessTestTarget.PREREQUISITES:
+                self._add_prebuilt_target_by_module_name(prerequisite)
+
+            test_prebuilt_target = self._add_prebuilt_target(info)
+
+            return DevicelessTestTarget.create(
+                name, package_name, test_prebuilt_target.qualified_name())
+
+        return self._add_target(package_name, name, create)
+
+    def _get_module_info(self, module_name: str) -> Dict[str, Any]:
         info = self.mod_info.get_module_info(module_name)
 
         if not info:
@@ -126,10 +177,11 @@ class WorkspaceGenerator:
 
         return info
 
-    def _get_module_path(self, module_name: str, info: {str:[str]}) -> str:
+    def _get_module_path(self, info: Dict[str, Any]) -> str:
         mod_path = info.get(constants.MODULE_PATH)
 
         if len(mod_path) != 1:
+            module_name = info['module_name']
             # We usually have a single path but there are a few exceptions for
             # modules like libLLVM_android and libclang_android.
             # TODO(nelsonli): Remove this check once b/153609531 is fixed.
@@ -137,6 +189,10 @@ class WorkspaceGenerator:
                             f' path: {mod_path}')
 
         return mod_path[0]
+
+    def is_host_unit_test(self, info: Dict[str, Any]) -> bool:
+        return self.mod_info.is_suite_in_compatibility_suites(
+            'host-unit-tests', info)
 
     def _generate_artifacts(self):
         """Generate workspace files on disk."""
@@ -176,8 +232,8 @@ class Package:
 
         self.name_to_target[target_name] = target
 
-        for bzl_package, symbol in target.required_imports():
-            self.imports[bzl_package].add(symbol)
+        for i in target.required_imports():
+            self.imports[i.bzl_package].add(i.symbol)
 
     def generate(self, workspace_out_path: Path):
         package_dir = workspace_out_path.joinpath(self.path)
@@ -203,19 +259,39 @@ class Package:
                 f.write('\n')
                 target.write_to_build_file(f)
 
+    def get_target(self, target_name: str) -> 'Target':
+        return self.name_to_target.get(target_name, None)
 
-Import = namedtuple('Import', ['bzl_package', 'symbol'])
-Config = namedtuple('Config', ['name', 'out_path'])
+
+@dataclasses.dataclass(frozen=True)
+class Import:
+    bzl_package: str
+    symbol: str
+
+
+@dataclasses.dataclass(frozen=True)
+class Config:
+    name: str
+    out_path: Path
 
 
 class Target(ABC):
     """Abstract class for a Bazel target."""
 
     @abstractmethod
-    def name(self):
+    def name(self) -> str:
         pass
 
+    def package_name(self) -> str:
+        pass
+
+    def qualified_name(self) -> str:
+        return f'//{self.package_name()}:{self.name()}'
+
     def required_imports(self) -> Set[Import]:
+        return set()
+
+    def supported_configs(self) -> Set[Config]:
         return set()
 
     def write_to_build_file(self, f: IO):
@@ -225,12 +301,62 @@ class Target(ABC):
         pass
 
 
+class DevicelessTestTarget(Target):
+    """Class for generating a deviceless test target."""
+
+    PREREQUISITES = frozenset({
+        'adb',
+        'atest-tradefed',
+        'atest_script_help.sh',
+        'atest_tradefed.sh',
+        'tradefed',
+        'tradefed-contrib',
+        'tradefed-test-framework',
+    })
+
+    @staticmethod
+    def create(name: str, package_name: str, prebuilt_target_name: str):
+        return DevicelessTestTarget(name, package_name, prebuilt_target_name)
+
+    def __init__(self, name: str, package_name: str, prebuilt_target_name: str):
+        self._name = name
+        self._package_name = package_name
+        self._prebuilt_target_name = prebuilt_target_name
+
+    def name(self) -> str:
+        return self._name
+
+    def package_name(self) -> str:
+        return self._package_name
+
+    def required_imports(self) -> Set[Import]:
+        return {
+            Import('//bazel/rules:tradefed_test.bzl',
+                   'tradefed_deviceless_test'),
+        }
+
+    def supported_configs(self) -> Set[Config]:
+        return set()
+
+    def write_to_build_file(self, f: IO):
+        def fprint(text):
+            print(text, file=f)
+
+        fprint('tradefed_deviceless_test(')
+        fprint(f'    name = "{self._name}",')
+        fprint(f'    test = "{self._prebuilt_target_name}",')
+        fprint(')')
+
+
 class SoongPrebuiltTarget(Target):
     """Class for generating a Soong prebuilt target on disk."""
 
     @staticmethod
-    def create(gen: WorkspaceGenerator, info: Dict[str, Any],
-               test_module=False):
+    def create(gen: WorkspaceGenerator,
+               info: Dict[str, Any],
+               package_name: str='',
+               test_module: bool=False,
+               runtime_dep_targets: List[Target]=None):
         module_name = info['module_name']
 
         configs = [
@@ -251,19 +377,31 @@ class SoongPrebuiltTarget(Target):
             raise Exception(f'Module `{module_name}` does not have any'
                             f' installed paths')
 
-        return SoongPrebuiltTarget(module_name, config_files)
+        return SoongPrebuiltTarget(module_name, package_name, config_files,
+                                   runtime_dep_targets)
 
-    def __init__(self, name: str, config_files: Dict[Config, List[Path]]):
+    def __init__(self, name: str, package_name: str,
+                 config_files: Dict[Config, List[Path]],
+                 runtime_dep_targets: List[Target]=None):
         self._name = name
+        self._package_name = package_name
         self.config_files = config_files
+        self.config_dep_targets = group_targets_by_config(
+            runtime_dep_targets or [])
 
-    def name(self):
+    def name(self) -> str:
         return self._name
+
+    def package_name(self) -> str:
+        return self._package_name
 
     def required_imports(self) -> Set[Import]:
         return {
             Import('//bazel/rules:soong_prebuilt.bzl', 'soong_prebuilt'),
         }
+
+    def supported_configs(self) -> Set[Config]:
+        return self.config_files.keys()
 
     def write_to_build_file(self, f: IO):
         def fprint(text):
@@ -273,11 +411,27 @@ class SoongPrebuiltTarget(Target):
         fprint(f'    name = "{self._name}",')
         fprint('    files = select({')
 
-        for config in sorted(self.config_files.keys()):
+        for config in sorted(self.config_files.keys(), key=lambda c: c.name):
             fprint(f'        "//bazel/rules:{config.name}":'
                    f' glob(["{self._name}/{config.name}/**/*"]),')
 
         fprint('    }),')
+        fprint(f'    module_name = "{self._name}",')
+
+        if self.config_dep_targets:
+            fprint('    runtime_deps = select({')
+
+            for config, deps in sorted(self.config_dep_targets.items(),
+                                     key=lambda c: c[0].name):
+                runtime_dep_names = sorted(d.qualified_name() for d in deps)
+
+                fprint(f'        "//bazel/rules:{config.name}": [')
+                fprint('\n'.join(
+                    f'            "{d}",' for d in runtime_dep_names))
+                fprint('        ],')
+
+            fprint('    }),')
+
         fprint(')')
 
     def create_filesystem_layout(self, package_dir: Path):
@@ -315,6 +469,18 @@ def group_paths_by_config(
     return config_files
 
 
+def group_targets_by_config(
+    targets: List[Target]) -> Dict[Config, List[Target]]:
+
+    config_to_targets = defaultdict(list)
+
+    for target in targets:
+        for config in target.supported_configs():
+            config_to_targets[config].append(target)
+
+    return config_to_targets
+
+
 def _is_relative_to(path1: Path, path2: Path) -> bool:
     """Return True if the path is relative to another path or False."""
     # Note that this implementation is required because Path.is_relative_to only
@@ -350,7 +516,8 @@ def _decorate_find_method(mod_info, finder_method_func):
             return test_infos
         for tinfo in test_infos:
             m_info = mod_info.get_module_info(tinfo.test_name)
-            if mod_info.is_unit_test(m_info):
+            if mod_info.is_suite_in_compatibility_suites(
+                'host-unit-tests', m_info):
                 tinfo.test_runner = BazelTestRunner.NAME
         return test_infos
     return use_bazel_runner
