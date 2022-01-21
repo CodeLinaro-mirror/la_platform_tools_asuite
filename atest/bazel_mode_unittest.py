@@ -17,14 +17,18 @@
 """Unit tests for bazel_mode."""
 # pylint: disable=invalid-name
 # pylint: disable=missing-function-docstring
+# pylint: disable=too-many-lines
 
-import io
+import re
+import shlex
 import shutil
 import tempfile
 import unittest
 
-from unittest import mock
 from pathlib import Path
+from typing import List
+from unittest import mock
+
 # pylint: disable=import-error
 from pyfakefs import fake_filesystem_unittest
 
@@ -42,20 +46,119 @@ MODULE_BUILD_TARGETS = {'foo1', 'foo2', 'foo3'}
 MODULE_NAME = 'foo'
 
 
-class WorkspaceGeneratorTest(fake_filesystem_unittest.TestCase):
-    """Tests for WorkspaceGenerator."""
+class GenerationTestFixture(fake_filesystem_unittest.TestCase):
+    """Fixture for workspace generation tests."""
 
     def setUp(self):
         self.setUpPyfakefs()
 
         self.src_root_path = Path('/src')
-
         self.out_dir_path = self.src_root_path.joinpath('out')
         self.out_dir_path.mkdir(parents=True)
-
         self.product_out_path = self.out_dir_path.joinpath('product')
         self.host_out_path = self.out_dir_path.joinpath('host')
         self.workspace_out_path = self.out_dir_path.joinpath('workspace')
+
+    def create_workspace_generator(self, modules=None):
+        mod_info = self.create_module_info(modules)
+
+        generator = bazel_mode.WorkspaceGenerator(
+            self.src_root_path,
+            self.workspace_out_path,
+            self.product_out_path,
+            self.host_out_path,
+            self.out_dir_path,
+            mod_info
+        )
+
+        return generator
+
+    def run_generator(self, mod_info):
+        generator = bazel_mode.WorkspaceGenerator(
+            self.src_root_path,
+            self.workspace_out_path,
+            self.product_out_path,
+            self.host_out_path,
+            self.out_dir_path,
+            mod_info
+        )
+
+        generator.generate()
+
+    # pylint: disable=protected-access
+    @mock.patch.dict('os.environ', {constants.ANDROID_BUILD_TOP:'/'})
+    def create_empty_module_info(self):
+        fake_temp_file_name = next(tempfile._get_candidate_names())
+        self.fs.create_file(fake_temp_file_name, contents='{}')
+        return module_info.ModuleInfo(module_file=fake_temp_file_name)
+
+    def create_module_info(self, modules=None):
+        mod_info = self.create_empty_module_info()
+        modules = modules or []
+
+        for module_name in bazel_mode.DevicelessTestTarget.PREREQUISITES:
+            info = host_module(name=module_name, path='prebuilts')
+            mod_info.name_to_module_info[module_name] = info
+
+        for m in modules:
+            mod_info.name_to_module_info[m['module_name']] = m
+
+        return mod_info
+
+    def assertSymlinkTo(self, symlink_path, target_path):
+        self.assertEqual(symlink_path.resolve(strict=False), target_path)
+
+    def assertTargetInWorkspace(self, name, package=''):
+        build_file = self.workspace_out_path.joinpath(package, 'BUILD.bazel')
+        contents = build_file.read_text()
+        occurrences = len(self.find_target_by_name(name, contents))
+
+        if occurrences == 1:
+            return
+
+        cardinality = 'Multiple' if occurrences else 'Zero'
+        self.fail(
+            f'{cardinality} targets named \'{name}\' found in \'{contents}\''
+        )
+
+    def assertTargetNotInWorkspace(self, name, package=''):
+        build_file = self.workspace_out_path.joinpath(package, 'BUILD.bazel')
+
+        if not build_file.exists():
+            return
+
+        contents = build_file.read_text()
+        matches = self.find_target_by_name(name, contents)
+
+        if not matches:
+            return
+
+        self.fail(
+            f'Unexpectedly found target(s) named \'{name}\' in \'{contents}\''
+        )
+
+    def assertInBuildFile(self, substring, package=''):
+        build_file = self.workspace_out_path.joinpath(package, 'BUILD.bazel')
+        self.assertIn(substring, build_file.read_text())
+
+    def assertNotInBuildFile(self, substring, package=''):
+        build_file = self.workspace_out_path.joinpath(package, 'BUILD.bazel')
+        self.assertNotIn(substring, build_file.read_text())
+
+    def assertFileInWorkspace(self, relative_path, package=''):
+        path = self.workspace_out_path.joinpath(package, relative_path)
+        self.assertTrue(path.exists())
+
+    def assertFileNotInWorkspace(self, relative_path, package=''):
+        path = self.workspace_out_path.joinpath(package, relative_path)
+        self.assertFalse(path.exists())
+
+    def find_target_by_name(self, name: str, contents: str) -> List[str]:
+        return re.findall(rf'\bname\s*=\s*"{name}"', contents)
+
+
+class BasicWorkspaceGenerationTest(GenerationTestFixture):
+    """Tests for basic workspace generation and update."""
 
     def test_generate_workspace_when_nonexistent(self):
         workspace_generator = self.create_workspace_generator()
@@ -79,17 +182,17 @@ class WorkspaceGeneratorTest(fake_filesystem_unittest.TestCase):
         self.assertNotEqual(workspace_stat, new_workspace_stat)
 
     def test_not_regenerate_workspace_when_module_info_unchanged(self):
-        workspace_generator = self.create_workspace_generator()
-        workspace_generator.generate()
-        workspace_stat = workspace_generator.workspace_out_path.stat()
+        workspace_generator1 = self.create_workspace_generator()
+        workspace_generator1.generate()
+        workspace_stat = workspace_generator1.workspace_out_path.stat()
 
-        workspace_generator = self.create_workspace_generator()
-        workspace_generator.generate()
+        workspace_generator2 = self.create_workspace_generator()
+        workspace_generator2.generate()
+        new_workspace_stat = workspace_generator2.workspace_out_path.stat()
 
-        new_workspace_stat = workspace_generator.workspace_out_path.stat()
         self.assertEqual(workspace_stat, new_workspace_stat)
 
-    def test_not_regenerate_worksapce_when_module_only_touched(self):
+    def test_not_regenerate_workspace_when_module_only_touched(self):
         workspace_generator = self.create_workspace_generator()
         workspace_generator.generate()
         workspace_stat = workspace_generator.workspace_out_path.stat()
@@ -106,7 +209,7 @@ class WorkspaceGeneratorTest(fake_filesystem_unittest.TestCase):
         workspace_generator.generate()
         workspace_stat = workspace_generator.workspace_out_path.stat()
 
-        mod_info_file_path =  workspace_generator.mod_info.mod_info_file_path
+        mod_info_file_path = workspace_generator.mod_info.mod_info_file_path
         with open(mod_info_file_path, 'a') as f:
             f.write(' ')
         workspace_generator = self.create_workspace_generator()
@@ -130,11 +233,11 @@ class WorkspaceGeneratorTest(fake_filesystem_unittest.TestCase):
     def test_scrub_old_workspace_when_regenerating(self):
         workspace_generator = self.create_workspace_generator()
         workspace_generator.generate()
-        some_file = workspace_generator.workspace_out_path.joinpath("some_file")
+        some_file = workspace_generator.workspace_out_path.joinpath('some_file')
         some_file.touch()
         self.assertTrue(some_file.is_file())
 
-        # Remove the md5 file to regenerate workspace.
+        # Remove the md5 file to regenerate the workspace.
         workspace_generator.mod_info.mod_info_file_path.unlink()
         workspace_generator = self.create_workspace_generator()
         workspace_generator.generate()
@@ -170,153 +273,533 @@ class WorkspaceGeneratorTest(fake_filesystem_unittest.TestCase):
             self.src_root_path.joinpath('tools/asuite/atest/bazel/rules')
         )
 
-    def test_generate_host_unit_test_module(self):
-        module = self.create_host_unit_test_module()
-        gen = self.create_workspace_generator(modules=[module])
-        expected_path = self.expected_package_path(module)
+    def test_generate_host_unit_test_module_target(self):
+        mod_info = self.create_module_info(modules=[
+            host_unit_test_module(name='hello_world_test')
+        ])
 
-        gen.generate()
+        self.run_generator(mod_info)
 
-        self.assertTrue(expected_path.is_dir())
+        self.assertTargetInWorkspace('hello_world_test_host')
 
-    def test_raise_when_host_unit_test_prerequisite_not_in_module_info(self):
-        module = self.create_host_unit_test_module()
-        gen = self.create_workspace_generator(modules=[module])
-        del gen.mod_info.name_to_module_info['adb']
+    def test_not_generate_host_test_module_target(self):
+        mod_info = self.create_module_info(modules=[
+            host_test_module(name='hello_world_test'),
+        ])
 
-        with self.assertRaises(Exception) as context:
-            gen.generate()
+        self.run_generator(mod_info)
 
-        self.assertIn('adb', str(context.exception))
+        self.assertTargetNotInWorkspace('hello_world_test')
 
-    def test_raise_when_host_unit_test_prerequisite_module_missing_path(self):
-        module = self.create_host_unit_test_module()
-        gen = self.create_workspace_generator(modules=[module])
-        gen.mod_info.name_to_module_info['adb'].get('path').clear()
 
-        with self.assertRaises(Exception) as context:
-            gen.generate()
+class HostUnitTestModuleTestTargetGenerationTest(GenerationTestFixture):
+    """Tests for host unit test module test target generation."""
 
-        self.assertIn('adb', str(context.exception))
+    def test_generate_deviceless_test_import(self):
+        mod_info = self.create_module_info(modules=[
+            host_unit_test_module(name='hello_world_test'),
+        ])
 
-    def test_write_build_file_in_package_dir(self):
-        module_path = 'example/tests'
-        module = self.create_host_unit_test_module()
-        module['path'] = [module_path]
-        expected_path = self.workspace_out_path.joinpath(module_path,
-                                                         'BUILD.bazel')
-        gen = self.create_workspace_generator(modules=[module])
+        self.run_generator(mod_info)
 
-        gen.generate()
-
-        self.assertTrue(expected_path.is_file())
-
-    def test_not_generate_non_host_unit_test_module(self):
-        module = self.create_host_unit_test_module()
-        module['compatibility_suites'].clear()
-        gen = self.create_workspace_generator(modules=[module])
-        expected_path = self.expected_package_path(module)
-
-        gen.generate()
-
-        self.assertFalse(expected_path.is_dir())
-
-    def test_not_generate_non_testable_host_unit_test_module(self):
-        module = self.create_host_unit_test_module()
-        module['auto_test_config'].clear()
-        gen = self.create_workspace_generator(modules=[module])
-        expected_path = self.expected_package_path(module)
-
-        gen.generate()
-
-        self.assertFalse(expected_path.is_dir())
-
-    def test_generate_shared_lib_for_dependent_target(self):
-        lib_module_name = 'libhello'
-        lib_module = self.create_module(lib_module_name)
-        module = self.create_host_unit_test_module()
-        module['shared_libs'] = [lib_module_name]
-        gen = self.create_workspace_generator(modules=[module, lib_module])
-
-        gen.generate()
-
-        self.assertInModuleBuildFile(f'name = "{lib_module_name}"',
-                                     lib_module)
-
-    def test_not_generate_uninstalled_shared_lib_target(self):
-        lib_module_name = 'libhello'
-        lib_module = self.create_module(lib_module_name)
-        lib_module['installed'] = []
-        module = self.create_host_unit_test_module()
-        module['shared_libs'] = [lib_module_name]
-        gen = self.create_workspace_generator(modules=[module, lib_module])
-        expected_path = self.expected_package_path(lib_module)
-
-        gen.generate()
-
-        self.assertFalse(expected_path.joinpath('BUILD.bazel').is_file())
-
-    def create_workspace_generator(self, mod_info=None, modules=None):
-        mod_info = mod_info or self.create_empty_module_info()
-        modules = modules or []
-
-        for module_name in bazel_mode.DevicelessTestTarget.PREREQUISITES:
-            info = self.create_module(module_name)
-            mod_info.name_to_module_info[module_name] = info
-
-        for m in modules:
-            mod_info.name_to_module_info[m['module_name']] = m
-
-        generator = bazel_mode.WorkspaceGenerator(
-            self.src_root_path,
-            self.workspace_out_path,
-            self.product_out_path,
-            self.host_out_path,
-            self.out_dir_path,
-            mod_info
+        self.assertInBuildFile(
+            'load("//bazel/rules:tradefed_test.bzl",'
+            ' "tradefed_deviceless_test")\n'
         )
 
-        return generator
+    def test_generate_deviceless_test_target(self):
+        mod_info = self.create_module_info(modules=[
+            host_unit_test_module(
+                name='hello_world_test', path='example/tests'),
+        ])
 
-    # pylint: disable=protected-access
-    @mock.patch.dict('os.environ', {constants.ANDROID_BUILD_TOP:'/'})
-    def create_empty_module_info(self):
+        self.run_generator(mod_info)
+
+        self.assertInBuildFile(
+            'tradefed_deviceless_test(\n'
+            '    name = "hello_world_test_host",\n'
+            '    test = "//example/tests:hello_world_test",\n'
+            ')',
+            package='example/tests',
+        )
+
+    def test_generate_test_module_prebuilt(self):
+        mod_info = self.create_module_info(modules=[
+            host_unit_test_module(name='hello_world_test'),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertTargetInWorkspace('hello_world_test')
+
+    def test_raise_when_prerequisite_not_in_module_info(self):
+        mod_info = self.create_module_info(modules=[
+            host_unit_test_module(),
+        ])
+        del mod_info.name_to_module_info['adb']
+
+        with self.assertRaises(Exception) as context:
+            self.run_generator(mod_info)
+
+        self.assertIn('adb', str(context.exception))
+
+    def test_raise_when_prerequisite_module_missing_path(self):
+        mod_info = self.create_module_info(modules=[
+            host_unit_test_module(),
+        ])
+        mod_info.name_to_module_info['adb'].get('path').clear()
+
+        with self.assertRaises(Exception) as context:
+            self.run_generator(mod_info)
+
+        self.assertIn('adb', str(context.exception))
+
+
+class ModulePrebuiltTargetGenerationTest(GenerationTestFixture):
+    """Tests for module prebuilt target generation."""
+
+    def test_generate_prebuilt_import(self):
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertInBuildFile(
+            'load("//bazel/rules:soong_prebuilt.bzl", "soong_prebuilt")\n'
+        )
+
+    def test_generate_prebuilt_target_for_multi_config_test_module(self):
+        mod_info = self.create_module_info(modules=[
+            multi_config(supported_test_module(name='libhello')),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertInBuildFile(
+            'soong_prebuilt(\n'
+            '    name = "libhello",\n'
+            '    module_name = "libhello",\n'
+            '    files = select({\n'
+            '        "//bazel/rules:device": glob(["libhello/device/**/*"]),\n'
+            '        "//bazel/rules:host": glob(["libhello/host/**/*"]),\n'
+            '    }),\n'
+            ')\n'
+        )
+
+    def test_create_symlinks_to_testcases_for_multi_config_test_module(self):
+        module_name = 'hello_world_test'
+        mod_info = self.create_module_info(modules=[
+            multi_config(supported_test_module(name=module_name))
+        ])
+        module_out_path = self.workspace_out_path.joinpath(module_name)
+
+        self.run_generator(mod_info)
+
+        self.assertSymlinkTo(
+            module_out_path.joinpath(f'host/testcases/{module_name}'),
+            self.host_out_path.joinpath(f'testcases/{module_name}'))
+        self.assertSymlinkTo(
+            module_out_path.joinpath(f'device/testcases/{module_name}'),
+            self.product_out_path.joinpath(f'testcases/{module_name}'))
+
+    def test_generate_files_for_host_only_test_module(self):
+        mod_info = self.create_module_info(modules=[
+            host_only_config(supported_test_module(name='test1')),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertInBuildFile(
+            '    files = select({\n'
+            '        "//bazel/rules:host": glob(["test1/host/**/*"]),\n'
+            '    }),\n'
+        )
+
+    def test_generate_files_for_device_only_test_module(self):
+        mod_info = self.create_module_info(modules=[
+            device_only_config(supported_test_module(name='test1')),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertInBuildFile(
+            '    files = select({\n'
+            '        "//bazel/rules:device": glob(["test1/device/**/*"]),\n'
+            '    }),\n'
+        )
+
+    def test_not_create_device_symlinks_for_host_only_test_module(self):
+        mod_info = self.create_module_info(modules=[
+            host_only_config(supported_test_module(name='test1')),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertFileNotInWorkspace('test1/device')
+
+    def test_not_create_host_symlinks_for_device_test_module(self):
+        mod_info = self.create_module_info(modules=[
+            device_only_config(supported_test_module(name='test1')),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertFileNotInWorkspace('test1/host')
+
+
+class ModuleSharedLibGenerationTest(GenerationTestFixture):
+    """Tests for module shared libs target generation."""
+
+    def test_not_generate_runtime_deps_when_all_configs_incompatible(self):
+        mod_info = self.create_module_info(modules=[
+            host_only_config(supported_test_module(shared_libs=['libdevice'])),
+            device_only_config(module(name='libdevice')),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertNotInBuildFile('runtime_deps')
+
+    def test_generate_runtime_deps_when_configs_compatible(self):
+        mod_info = self.create_module_info(modules=[
+            multi_config(supported_test_module(shared_libs=['libmulti'])),
+            multi_config_module(name='libmulti'),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertInBuildFile(
+            '    runtime_deps = select({\n'
+            '        "//bazel/rules:device": [\n'
+            '            "//:libmulti",\n'
+            '        ],\n'
+            '        "//bazel/rules:host": [\n'
+            '            "//:libmulti",\n'
+            '        ],\n'
+            '    }),\n'
+        )
+
+    def test_generate_runtime_deps_when_configs_partially_compatible(self):
+        mod_info = self.create_module_info(modules=[
+            multi_config(supported_test_module(shared_libs=[
+                'libhost',
+            ])),
+            host_module(name='libhost'),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertInBuildFile(
+            '    runtime_deps = select({\n'
+            '        "//bazel/rules:device": [\n'
+            '        ],\n'
+            '        "//bazel/rules:host": [\n'
+            '            "//:libhost",\n'
+            '        ],\n'
+            '    }),\n'
+        )
+
+    def test_generate_runtime_deps_with_mixed_compatibility(self):
+        mod_info = self.create_module_info(modules=[
+            multi_config(supported_test_module(shared_libs=[
+                'libhost',
+                'libdevice',
+                'libmulti'
+            ])),
+            host_module(name='libhost'),
+            device_module(name='libdevice'),
+            multi_config_module(name='libmulti'),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertInBuildFile(
+            '    runtime_deps = select({\n'
+            '        "//bazel/rules:device": [\n'
+            '            "//:libdevice",\n'
+            '            "//:libmulti",\n'
+            '        ],\n'
+            '        "//bazel/rules:host": [\n'
+            '            "//:libhost",\n'
+            '            "//:libmulti",\n'
+            '        ],\n'
+            '    }),\n'
+        )
+
+    def test_generate_runtime_deps_recursively(self):
+        mod_info = self.create_module_info(modules=[
+            multi_config(supported_test_module(shared_libs=[
+                'libdirect',
+            ])),
+            multi_config_module(name='libdirect', shared_libs=[
+                'libtransitive',
+            ]),
+            multi_config_module(name='libtransitive'),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertTargetInWorkspace('libtransitive')
+
+    def test_generate_shared_runtime_deps_once(self):
+        mod_info = self.create_module_info(modules=[
+            multi_config(supported_test_module(shared_libs=[
+                'libleft',
+                'libright',
+            ])),
+            multi_config_module(name='libleft', shared_libs=[
+                'libshared',
+            ]),
+            multi_config_module(name='libright', shared_libs=[
+                'libshared',
+            ]),
+            multi_config_module(name='libshared'),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertTargetInWorkspace('libshared')
+
+    def test_generate_runtime_deps_in_order(self):
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(shared_libs=['libhello2', 'libhello1']),
+            host_module(name='libhello1'),
+            host_module(name='libhello2'),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertInBuildFile(
+            '            "//:libhello1",\n'
+            '            "//:libhello2",\n'
+        )
+
+    def test_generate_target_for_shared_lib(self):
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(shared_libs=['libhello']),
+            host_module(name='libhello'),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertTargetInWorkspace('libhello')
+
+    def test_not_generate_for_missing_shared_lib_module(self):
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(shared_libs=['libhello'])
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertNotInBuildFile('            "//:libhello",\n')
+        self.assertTargetNotInWorkspace('libhello')
+
+    def test_not_generate_when_shared_lib_uninstalled(self):
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(shared_libs=['libhello']),
+            host_module(name='libhello', installed=[]),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertNotInBuildFile('            "//:libhello",\n')
+        self.assertTargetNotInWorkspace('libhello')
+
+    def test_raise_when_shared_lib_install_path_for_unsupported_config(self):
+        unsupported_install_path = 'out/other'
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(shared_libs=['libhello']),
+            module('libhello', installed=[unsupported_install_path]),
+        ])
+
+        with self.assertRaises(Exception) as context:
+            self.run_generator(mod_info)
+
+        self.assertIn(unsupported_install_path, str(context.exception))
+
+    def test_raise_when_shared_lib_module_install_path_ambiguous(self):
+        ambiguous_install_path = 'out/f1'
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(shared_libs=['libhello']),
+            module(name='libhello', installed=[ambiguous_install_path]),
+        ])
+
+        with self.assertRaises(Exception):
+            self.run_generator(mod_info)
+
+
+class SharedLibPrebuiltTargetGenerationTest(GenerationTestFixture):
+    """Tests for runtime dependency module prebuilt target generation."""
+
+    def test_create_multi_config_target_symlinks(self):
+        host_file1 = self.host_out_path.joinpath('a/b/f1')
+        host_file2 = self.host_out_path.joinpath('a/c/f2')
+        device_file1 = self.product_out_path.joinpath('a/b/f1')
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(shared_libs=['libhello']),
+            multi_config_module(
+                name='libhello',
+                installed=[str(host_file1), str(host_file2), str(device_file1)]
+            )
+        ])
+        package_path = self.workspace_out_path
+
+        self.run_generator(mod_info)
+
+        self.assertSymlinkTo(
+            package_path.joinpath('libhello/host/a/b/f1'), host_file1)
+        self.assertSymlinkTo(
+            package_path.joinpath('libhello/host/a/c/f2'), host_file2)
+        self.assertSymlinkTo(
+            package_path.joinpath('libhello/device/a/b/f1'), device_file1)
+
+    def test_generate_for_host_only_shared_lib_dependency(self):
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(shared_libs=['libhello']),
+            host_module(name='libhello'),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertInBuildFile(
+            '    files = select({\n'
+            '        "//bazel/rules:host": glob(["libhello/host/**/*"]),\n'
+            '    }),\n'
+        )
+        self.assertFileNotInWorkspace('libhello/device')
+
+    def test_generate_for_device_only_shared_lib_dependency(self):
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(shared_libs=['libhello']),
+            device_module(name='libhello'),
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertInBuildFile(
+            '    files = select({\n'
+            '        "//bazel/rules:device": glob(["libhello/device/**/*"]),\n'
+            '    }),\n'
+        )
+        self.assertFileNotInWorkspace('libhello/host')
+
+
+@mock.patch.dict('os.environ', {constants.ANDROID_BUILD_TOP:'/'})
+def create_empty_module_info():
+    with fake_filesystem_unittest.Patcher() as patcher:
+        # pylint: disable=protected-access
         fake_temp_file_name = next(tempfile._get_candidate_names())
-        self.fs.create_file(fake_temp_file_name, contents='{}')
+        patcher.fs.create_file(fake_temp_file_name, contents='{}')
         return module_info.ModuleInfo(module_file=fake_temp_file_name)
 
-    def create_module(self, name='libhello'):
-        module = {}
 
-        module["module_name"] = name
-        module['path'] = ['src/%s' % name]
-        module['installed'] = [str(self.host_out_path.joinpath(name))]
-        module["test_class"] = []
-        module["dependencies"] = []
-        module["is_unit_test"] = 'false'
+def create_module_info(modules=None):
+    mod_info = create_empty_module_info()
+    modules = modules or []
 
-        return module
+    for m in modules:
+        mod_info.name_to_module_info[m['module_name']] = m
+
+    return mod_info
 
 
-    def create_host_unit_test_module(self, name='hello_test'):
-        module = self.create_module(name)
+def host_unit_test_module(**kwargs):
+    return host_unit_suite(host_test_module(**kwargs))
 
-        module['compatibility_suites'] = ["host-unit-tests"]
-        module['auto_test_config'] = ["true"]
 
-        return module
+# We use the below alias in situations where the actual type is irrelevant to
+# the test as long as it is supported in Bazel mode.
+supported_test_module = host_unit_test_module
 
-    def expected_package_path(self, module):
-        return self.workspace_out_path.joinpath(module['path'][0])
 
-    def assertSymlinkTo(self, symlink_path, target_path):
-        self.assertEqual(symlink_path.resolve(strict=False), target_path)
+def host_test_module(**kwargs):
+    kwargs.setdefault('name', 'hello_world_test')
+    return host_only_config(test_module(**kwargs))
 
-    def assertInModuleBuildFile(self, compare_str, module):
-        module_build_file = self.expected_package_path(module).joinpath(
-            'BUILD.bazel')
-        self.assertTrue(module_build_file.is_file())
-        self.assertIn(compare_str, module_build_file.read_text())
+
+def host_module(**kwargs):
+    m = module(**kwargs)
+
+    if 'installed' in kwargs:
+        return m
+
+    return host_only_config(m)
+
+
+def device_module(**kwargs):
+    m = module(**kwargs)
+
+    if 'installed' in kwargs:
+        return m
+
+    return device_only_config(m)
+
+
+def multi_config_module(**kwargs):
+    m = module(**kwargs)
+
+    if 'installed' in kwargs:
+        return m
+
+    return multi_config(m)
+
+
+def test_module(**kwargs):
+    kwargs.setdefault('name', 'hello_world_test')
+    return test(module(**kwargs))
+
+
+def module(name=None, path=None, shared_libs=None, installed=None):
+    name = name or 'libhello'
+
+    m = {}
+
+    m['module_name'] = name
+    m['path'] = [path or '']
+    m['installed'] = installed or []
+    m['test_class'] = []
+    m['dependencies'] = []
+    m['is_unit_test'] = 'false'
+    m['shared_libs'] = shared_libs or []
+
+    return m
+
+
+def test(info):
+    info['auto_test_config'] = ['true']
+    return info
+
+
+def host_unit_suite(info):
+    info = test(info)
+    info.setdefault('compatibility_suites', []).append('host-unit-tests')
+    return info
+
+
+def multi_config(info):
+    name = info.get('module_name', 'lib')
+    info['installed'] = [
+        f'out/host/linux-x86/{name}/{name}.jar',
+        f'out/product/vsoc_x86/{name}/{name}.apk',
+    ]
+    return info
+
+
+def host_only_config(info):
+    name = info.get('module_name', 'lib')
+    info['installed'] = [
+        f'out/host/linux-x86/{name}/{name}.jar',
+    ]
+    return info
+
+
+def device_only_config(info):
+    name = info.get('module_name', 'lib')
+    info['installed'] = [
+        f'out/product/vsoc_x86/{name}/{name}.jar',
+    ]
+    return info
 
 
 class PackageTest(fake_filesystem_unittest.TestCase):
@@ -424,353 +907,6 @@ class PackageTest(fake_filesystem_unittest.TestCase):
                                                 'BUILD.bazel').read_text()
 
 
-class DevicelessTestTargetTest(unittest.TestCase):
-    """Tests for DevicelessTestTarget."""
-
-    def test_create_for_test_target(self):
-        target = bazel_mode.DevicelessTestTarget.create(
-            'hello_test_host', 'package_name', '//package_name:hello_test')
-        f = io.StringIO()
-
-        target.write_to_build_file(f)
-
-        self.assertIn(
-            'tradefed_deviceless_test(\n'
-            '    name = "hello_test_host",\n'
-            '    test = "//package_name:hello_test",\n'
-            ')',
-            f.getvalue())
-
-
-class SoongPrebuiltTargetTest(fake_filesystem_unittest.TestCase):
-    """Tests for SoongPrebuiltTarget."""
-
-    def setUp(self):
-        self.setUpPyfakefs()
-
-        self.src_root_path = Path('/src')
-
-        self.out_dir_path = self.src_root_path.joinpath('out')
-        self.out_dir_path.mkdir(parents=True)
-
-        self.product_out_path = self.out_dir_path.joinpath('product')
-        self.host_out_path = self.out_dir_path.joinpath('host')
-        self.workspace_out_path = self.out_dir_path.joinpath('workspace')
-
-        # TODO: Remove SoongPrebuiltTarget's dependency on the generator.
-        self.gen = self.create_workspace_generator()
-
-    def test_raise_when_module_missing_install_path(self):
-        module_name = 'libhello'
-        module = self.create_module(module_name)
-        module['installed'].clear()
-
-        with self.assertRaises(Exception) as context:
-            bazel_mode.SoongPrebuiltTarget.create(self.gen, module)
-
-        self.assertIn(module_name, str(context.exception))
-
-    def test_raise_when_module_install_path_for_other_config(self):
-        invalid_install_path = str(self.out_dir_path.parent.joinpath('other'))
-        module = self.create_module('libhello')
-        module['installed'] = [invalid_install_path]
-
-        with self.assertRaises(Exception) as context:
-            bazel_mode.SoongPrebuiltTarget.create(self.gen, module)
-
-        self.assertIn(invalid_install_path, str(context.exception))
-
-    def test_raise_when_module_install_path_ambiguous(self):
-        module_name = 'libhello'
-        module = self.create_module(module_name)
-        module['installed'] = [
-            str(self.out_dir_path.joinpath('f1')),
-        ]
-
-        with self.assertRaises(Exception):
-            bazel_mode.SoongPrebuiltTarget.create(self.gen, module)
-
-    def test_write_multi_config_target(self):
-        module_name = 'libhello'
-        module = self.create_module(module_name)
-        module['installed'] = [
-            str(self.host_out_path.joinpath(module_name)),
-            str(self.product_out_path.joinpath(module_name)),
-        ]
-        target = self.create_target(module)
-        f = io.StringIO()
-
-        target.write_to_build_file(f)
-
-        self.assertIn(
-            'soong_prebuilt(\n'
-            '    name = "libhello",\n'
-            '    files = select({\n'
-            '        "//bazel/rules:device": glob(["libhello/device/**/*"]),\n'
-            '        "//bazel/rules:host": glob(["libhello/host/**/*"]),\n'
-            '    }),\n'
-            '    module_name = "libhello",\n'
-            ')\n',
-            f.getvalue())
-
-    def test_not_write_device_condition_for_host_module(self):
-        module_name = 'libhello'
-        module = self.create_module(module_name)
-        module['installed'] = [
-            str(self.host_out_path.joinpath(module_name)),
-        ]
-        target = self.create_target(module)
-        f = io.StringIO()
-
-        target.write_to_build_file(f)
-
-        self.assertNotIn('"//bazel/rules:device"', f.getvalue())
-
-    def test_not_write_host_condition_for_device_module(self):
-        module_name = 'libhello'
-        module = self.create_module(module_name)
-        module['installed'] = [
-            str(self.product_out_path.joinpath(module_name)),
-        ]
-        target = self.create_target(module)
-        f = io.StringIO()
-
-        target.write_to_build_file(f)
-
-        self.assertNotIn('"//bazel/rules:host"', f.getvalue())
-
-    def test_create_multi_config_target_symlinks(self):
-        module_name = 'libhello'
-        module = self.create_module(module_name)
-        host_file1 = self.host_out_path.joinpath('a/b/f1')
-        host_file2 = self.host_out_path.joinpath('a/c/f2')
-        device_file1 = self.product_out_path.joinpath('a/b/f1')
-        module['installed'] = [
-            str(host_file1),
-            str(host_file2),
-            str(device_file1),
-        ]
-        target = self.create_target(module)
-        module_out_path = self.out_dir_path.joinpath(module_name)
-
-        target.create_filesystem_layout(self.out_dir_path)
-
-        self.assertSymlinkTo(
-            module_out_path.joinpath('host/a/b/f1'), host_file1)
-        self.assertSymlinkTo(
-            module_out_path.joinpath('host/a/c/f2'), host_file2)
-        self.assertSymlinkTo(
-            module_out_path.joinpath('device/a/b/f1'), device_file1)
-
-    def test_not_create_device_symlinks_for_host_module(self):
-        module_name = 'libhello'
-        module = self.create_module(module_name)
-        module['installed'] = [
-            str(self.host_out_path.joinpath('a/b/f1')),
-        ]
-        target = self.create_target(module)
-        module_out_path = self.out_dir_path.joinpath(module_name)
-
-        target.create_filesystem_layout(self.out_dir_path)
-
-        self.assertFalse(module_out_path.joinpath('device').exists())
-
-    def test_not_create_host_symlinks_for_device_module(self):
-        module_name = 'libhello'
-        module = self.create_module(module_name)
-        module['installed'] = [
-            str(self.product_out_path.joinpath('a/b/f1')),
-        ]
-        target = self.create_target(module)
-        module_out_path = self.out_dir_path.joinpath(module_name)
-
-        target.create_filesystem_layout(self.out_dir_path)
-
-        self.assertFalse(module_out_path.joinpath('host').exists())
-
-    def test_create_symlinks_to_testcases_for_test_module(self):
-        module_name = 'hello_test'
-        module = self.create_module(module_name)
-        module['installed'] = [
-            str(self.host_out_path.joinpath('a/b/f1')),
-            str(self.product_out_path.joinpath('a/b/f1')),
-        ]
-        target = self.create_target(module, test_module=True)
-        module_out_path = self.out_dir_path.joinpath(module_name)
-
-        target.create_filesystem_layout(self.out_dir_path)
-
-        self.assertSymlinkTo(
-            module_out_path.joinpath(f'host/testcases/{module_name}'),
-            self.host_out_path.joinpath(f'testcases/{module_name}'))
-        self.assertSymlinkTo(
-            module_out_path.joinpath(f'device/testcases/{module_name}'),
-            self.product_out_path.joinpath(f'testcases/{module_name}'))
-
-    def test_not_create_device_symlinks_for_host_test_module(self):
-        module_name = 'hello_test'
-        module = self.create_module(module_name)
-        module['installed'] = [
-            str(self.host_out_path.joinpath('a/b/f1')),
-        ]
-        target = self.create_target(module, test_module=True)
-        module_out_path = self.out_dir_path.joinpath(module_name)
-
-        target.create_filesystem_layout(self.out_dir_path)
-
-        self.assertFalse(module_out_path.joinpath('device').exists())
-
-    def test_not_create_host_symlinks_for_device_test_module(self):
-        module_name = 'hello_test'
-        module = self.create_module(module_name)
-        module['installed'] = [
-            str(self.product_out_path.joinpath('a/b/f1')),
-        ]
-        target = self.create_target(module, test_module=True)
-        module_out_path = self.out_dir_path.joinpath(module_name)
-
-        target.create_filesystem_layout(self.out_dir_path)
-
-        self.assertFalse(module_out_path.joinpath('host').exists())
-
-    def test_write_multi_config_runtime_deps(self):
-        lib1_name = 'libhello'
-        lib1_module = self.create_module(lib1_name)
-        lib1_module['installed'] = [
-            str(self.host_out_path.joinpath(lib1_name)),
-            str(self.product_out_path.joinpath(lib1_name)),
-        ]
-        lib2_name = 'libhello2'
-        lib2_module = self.create_module(lib2_name)
-        lib2_module['installed'] = [
-            str(self.product_out_path.joinpath(lib2_name)),
-        ]
-        module_name = 'hello_test'
-        module = self.create_module(module_name)
-        target = self.create_target(
-            module, runtime_dep_targets=[self.create_target(lib1_module),
-                                         self.create_target(lib2_module)])
-        f = io.StringIO()
-
-        target.write_to_build_file(f)
-
-        self.assertIn(
-            '    runtime_deps = select({\n'
-            '        "//bazel/rules:device": [\n'
-            '            "//src/libhello2:libhello2",\n'
-            '            "//src/libhello:libhello",\n'
-            '        ],\n'
-            '        "//bazel/rules:host": [\n'
-            '            "//src/libhello:libhello",\n'
-            '        ],\n'
-            '    }),\n',
-            f.getvalue())
-
-    def test_write_runtime_deps_in_order(self):
-        lib1_name = '1_libhello'
-        lib1_module = self.create_module(lib1_name)
-        lib2_name = '2_libhello'
-        lib2_module = self.create_module(lib2_name)
-        module_name = 'hello_test'
-        module = self.create_module(module_name)
-        target = self.create_target(
-            module, runtime_dep_targets=[self.create_target(lib1_module),
-                                         self.create_target(lib2_module)])
-        f = io.StringIO()
-
-        target.write_to_build_file(f)
-
-        self.assertIn(
-            '    runtime_deps = select({\n'
-            '        "//bazel/rules:host": [\n'
-            '            "//src/1_libhello:1_libhello",\n'
-            '            "//src/2_libhello:2_libhello",\n'
-            '        ],\n'
-            '    }),',
-            f.getvalue())
-
-    def test_not_write_device_condition_for_host_runtime_deps(self):
-        lib1_name = 'libhello'
-        lib1_module = self.create_module(lib1_name)
-        lib1_module['installed'] = [
-            str(self.host_out_path.joinpath(lib1_name)),
-        ]
-        module_name = 'hello_test'
-        module = self.create_module(module_name)
-        target = self.create_target(
-            module, runtime_dep_targets=[self.create_target(lib1_module)])
-        f = io.StringIO()
-
-        target.write_to_build_file(f)
-
-        self.assertNotIn(
-            '"//bazel/rules:device":',
-            f.getvalue())
-
-    def test_not_write_host_condition_for_device_runtime_deps(self):
-        lib1_name = 'libhello'
-        lib1_module = self.create_module(lib1_name)
-        lib1_module['installed'] = [
-            str(self.product_out_path.joinpath(lib1_name)),
-        ]
-        module_name = 'hello_test'
-        module = self.create_module(module_name)
-        target = self.create_target(
-            module, runtime_dep_targets=[self.create_target(lib1_module)])
-        f = io.StringIO()
-
-        target.write_to_build_file(f)
-
-        self.assertNotIn(
-            '"//bazel/rules:host": [\'//src/libhello:libhello\'],',
-            f.getvalue())
-
-    def assertSymlinkTo(self, symlink_path, target_path):
-        self.assertEqual(symlink_path.resolve(strict=False), target_path)
-
-    def create_workspace_generator(self):
-        mod_info = self.create_empty_module_info()
-
-        generator = bazel_mode.WorkspaceGenerator(
-            self.src_root_path,
-            self.workspace_out_path,
-            self.product_out_path,
-            self.host_out_path,
-            self.out_dir_path,
-            mod_info
-        )
-
-        return generator
-
-    # pylint: disable=protected-access
-    @mock.patch.dict('os.environ', {constants.ANDROID_BUILD_TOP:'/'})
-    def create_empty_module_info(self):
-        fake_temp_file_name = next(tempfile._get_candidate_names())
-        self.fs.create_file(fake_temp_file_name, contents='{}')
-        return module_info.ModuleInfo(module_file=fake_temp_file_name)
-
-    def create_module(self, name):
-        module = {}
-
-        module["module_name"] = name
-        module['path'] = ['src/%s' % name]
-        module['installed'] = [str(self.host_out_path.joinpath(name))]
-        module["test_class"] = []
-        module["dependencies"] = []
-        module["is_unit_test"] = 'false'
-
-        return module
-
-    def create_target(self, module, test_module=False,
-                      runtime_dep_targets=None):
-        return bazel_mode.SoongPrebuiltTarget.create(
-            self.gen, module,
-            module['path'][0],
-            test_module=test_module,
-            runtime_dep_targets=runtime_dep_targets
-        )
-
-
 class DecorateFinderMethodTest(fake_filesystem_unittest.TestCase):
     """Tests for _decorate_find_method()."""
 
@@ -801,8 +937,8 @@ class DecorateFinderMethodTest(fake_filesystem_unittest.TestCase):
         original_find_method = lambda obj, test_id:(
             self.create_single_test_infos(obj, test_id, test_name=MODULE_NAME,
                                           runner=ATEST_TF_RUNNER))
-        mod_info = self.create_single_test_module_info(MODULE_NAME,
-                                                  is_unit_test=False)
+        mod_info = self.create_single_test_module_info(
+            MODULE_NAME, is_unit_test=False)
         new_find_method = bazel_mode._decorate_find_method(
             mod_info, original_find_method)
 
@@ -829,6 +965,106 @@ class DecorateFinderMethodTest(fake_filesystem_unittest.TestCase):
         self.fs.create_file(fake_temp_file_name,
                             contents=unit_test_mod_info_content)
         return module_info.ModuleInfo(module_file=fake_temp_file_name)
+
+
+class BazelTestRunnerTest(unittest.TestCase):
+    """Tests for BazelTestRunner."""
+
+    def test_return_empty_build_reqs_when_no_test_infos(self):
+        run_command = self.mock_run_command(side_effect=Exception(''))
+        runner = self.create_bazel_test_runner(
+            modules=[
+                supported_test_module(name='test1', path='path1'),
+            ],
+            test_infos=[],
+            run_command=run_command,
+        )
+
+        reqs = runner.get_test_runner_build_reqs()
+
+        self.assertFalse(reqs)
+
+    def test_query_bazel_test_targets_deps_for_build_reqs(self):
+        run_command = self.mock_run_command()
+        runner = self.create_bazel_test_runner(
+            modules=[
+                supported_test_module(name='test1', path='path1'),
+                supported_test_module(name='test2', path='path2')
+            ],
+            test_infos = [
+                test_info_of('test2'),
+                test_info_of('test1'),  # Intentionally out of order.
+            ],
+            run_command=run_command,
+        )
+
+        runner.get_test_runner_build_reqs()
+
+        call_args = run_command.call_args[0][0]
+        self.assertIn(
+            'deps(tests(//path1:test1_host + //path2:test2_host))',
+            call_args,
+        )
+
+    def test_trim_whitespace_in_bazel_query_output(self):
+        run_command = self.mock_run_command(
+            return_value='\n'.join(['  test1  ', 'test2  ', '  ']))
+        runner = self.create_bazel_test_runner(
+            modules=[
+                supported_test_module(name='test1', path='path1'),
+            ],
+            test_infos = [test_info_of('test1')],
+            run_command=run_command,
+        )
+
+        reqs = runner.get_test_runner_build_reqs()
+
+        self.assertSetEqual({'test1', 'test2'}, reqs)
+
+    def test_generate_single_run_command(self):
+        test_infos = [test_info_of('test1')]
+        runner = self.create_bazel_test_runner_for_tests(test_infos)
+
+        cmd = runner.generate_run_commands(test_infos, {})
+
+        self.assertEqual(1, len(cmd))
+
+    def test_generate_run_command_containing_targets(self):
+        test_infos = [test_info_of('test1'), test_info_of('test2')]
+        runner = self.create_bazel_test_runner_for_tests(test_infos)
+
+        cmd = runner.generate_run_commands(test_infos, {})
+
+        self.assertTokensIn(['//path:test1_host', '//path:test2_host'], cmd[0])
+
+    def create_bazel_test_runner(self, modules, test_infos, run_command=None):
+        return bazel_mode.BazelTestRunner(
+            'result_dir',
+            mod_info=create_module_info(modules),
+            test_infos=test_infos,
+            src_top=Path('/src'),
+            workspace_path=Path('/src/workspace'),
+            run_command=run_command or self.mock_run_command()
+        )
+
+    def create_bazel_test_runner_for_tests(self, test_infos):
+        return self.create_bazel_test_runner(
+            modules=[supported_test_module(name=t.test_name, path='path')
+                     for t in test_infos],
+            test_infos=test_infos
+        )
+
+    def mock_run_command(self, **kwargs):
+        return mock.create_autospec(bazel_mode.default_run_command, **kwargs)
+
+    def assertTokensIn(self, expected_tokens, s):
+        tokens = shlex.split(s)
+        for token in expected_tokens:
+            self.assertIn(token, tokens)
+
+
+def test_info_of(module_name):
+    return test_info.TestInfo(module_name, BAZEL_RUNNER, [])
 
 
 if __name__ == '__main__':

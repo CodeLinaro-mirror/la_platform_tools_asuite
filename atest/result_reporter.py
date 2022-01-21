@@ -65,9 +65,15 @@ WmTests: Passed: 0, Failed: 0 (Completed With ERRORS)
 
 from __future__ import print_function
 
+import logging
+import os
+import re
+import zipfile
+
 from collections import OrderedDict
 
 import constants
+import atest_configs
 import atest_utils as au
 
 from test_runners import test_runner_base
@@ -405,6 +411,8 @@ class ResultReporter:
             print('-'*len(message))
             self.print_failed_tests()
         if self.log_path:
+            # Print aggregate result if any.
+            self._print_aggregate_test_metrics()
             print('Test Logs have saved in %s' % self.log_path)
         # TODO(b/174535786) Error handling while uploading test results has
         # unexpected exceptions.
@@ -413,6 +421,43 @@ class ResultReporter:
             print('Test Result uploaded to %s'
                   % au.colorize(self.test_result_link, constants.GREEN))
         return tests_ret
+
+    def _print_aggregate_test_metrics(self):
+        """Print aggregate test metrics text content if metric files exist."""
+        metric_files = au.find_files(
+            self.log_path, file_name='*_aggregate_test_metrics_*.txt')
+        if metric_files:
+            print('\n{}'.format(au.colorize(
+                'Aggregate test metrics', constants.CYAN)))
+            print(au.delimiter('-', 7))
+            for metric_file in metric_files:
+                self._print_test_metric(metric_file)
+
+    def _print_test_metric(self, metric_file):
+        """Print the content of the input metric file."""
+        test_metrics_re = re.compile(
+            r'test_results.*\s(.*)_aggregate_test_metrics_.*\.txt')
+        if not os.path.isfile(metric_file):
+            return
+        matches = re.findall(test_metrics_re, metric_file)
+        test_name = matches[0] if matches else ''
+        if test_name:
+            print('{}:'.format(au.colorize(test_name, constants.CYAN)))
+            with open(metric_file, 'r') as f:
+                matched = False
+                filter_re = atest_configs.GLOBAL_ARGS.aggregate_metric_filter
+                logging.debug('Aggregate metric filter: %s', filter_re)
+                for line in f.readlines():
+                    if (filter_re and
+                        not re.match(re.compile(filter_re), line)):
+                        continue
+                    matched = True
+                    print(' ' * 4 + str(line).strip())
+                if not matched:
+                    au.colorful_print(
+                        '  Nothing returned by the pattern: {}'.format(
+                            filter_re), constants.RED)
+                print()
 
     def print_collect_tests(self):
         """Print summary of collect tests only.
@@ -506,10 +551,27 @@ class ResultReporter:
                                           file_name=constants.TF_HOST_LOG)
                 if find_logs:
                     host_log_content = au.colorize(
-                        '\n\nTradefederation host log:', constants.RED)
-                for tf_log_zip in find_logs:
-                    host_log_content = host_log_content + au.extract_zip_text(
-                        tf_log_zip)
+                        '\n\nTradefederation host log:\n', constants.RED)
+                for tf_log in find_logs:
+                    if zipfile.is_zipfile(tf_log):
+                        host_log_content = (host_log_content +
+                                            au.extract_zip_text(tf_log))
+                    else:
+                        with open(tf_log, 'r') as f:
+                            for line in f.readlines():
+                                host_log_content = host_log_content + line
+
+            # Print the content for the standard error file for a single module.
+            if name and self.log_path and len(str(name).split()) > 1:
+                log_name = str(name).split()[1] + '-stderr_*.txt'
+                module_logs = au.find_files(self.log_path, file_name=log_name)
+                for log_file in module_logs:
+                    print(' ' * 2  + au.colorize(
+                        f'Logs in {os.path.basename(log_file)}:',
+                        constants.MAGENTA))
+                    with open(log_file, 'r') as f:
+                        for line in f.readlines():
+                            print(' ' * 2 + str(line), end='')
         elif stats.failed == 0:
             passed_label = au.colorize(passed_label, constants.GREEN)
         summary = ('%s: %s: %s, %s: %s, %s: %s, %s: %s, %s %s %s %s'
