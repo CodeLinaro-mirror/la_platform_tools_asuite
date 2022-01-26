@@ -83,6 +83,10 @@ EXIT_CODES_BEFORE_TEST = [EXIT_CODE_ENV_NOT_SETUP,
                           EXIT_CODE_AVD_CREATE_FAILURE,
                           EXIT_CODE_AVD_INVALID_ARGS]
 
+# Robolectric Types:
+ROBOTYPE_MODERN = 1
+ROBOTYPE_LEGACY = 2
+
 # Codes of specific events. These are exceptions that don't stop anything
 # but sending metrics.
 ACCESS_CACHE_FAILURE = 101
@@ -105,6 +109,7 @@ MODULE_MAINLINE_MODULES = 'test_mainline_modules'
 MODULE_DEPENDENCIES = 'dependencies'
 MODULE_SRCS = 'srcs'
 MODULE_IS_UNIT_TEST = 'is_unit_test'
+MODULE_SHARED_LIBS = 'shared_libs'
 
 # Env constants
 ANDROID_BUILD_TOP = 'ANDROID_BUILD_TOP'
@@ -201,7 +206,7 @@ USER_FROM_SUB_TOOL = 'USER_FROM_SUB_TOOL'
 TF_PREPARATION = 'tf-preparation'
 
 # Detect type for local_detect_event.
-# Next expansion : DETECT_TYPE_XXX = 8
+# Next expansion : DETECT_TYPE_XXX = 14
 DETECT_TYPE_BUG_DETECTED = 0
 DETECT_TYPE_ACLOUD_CREATE = 1
 DETECT_TYPE_FIND_BUILD = 2
@@ -213,6 +218,9 @@ DETECT_TYPE_NOT_REBUILD_MODULE_INFO = 7
 DETECT_TYPE_ONLY_BUILD_MODULE_INFO = 8
 DETECT_TYPE_FUZZY_SEARCH_TIME = 9
 DETECT_TYPE_PERMISSION_INCONSISTENT = 10
+DETECT_TYPE_SMART_REBUILD_MODULE_INFO = 11
+DETECT_TYPE_CLEAN_BUILD = 12
+DETECT_TYPE_TESTABLE_MODULES = 13
 # XTS suite types encode from 100 to 199
 DETECT_TYPE_XTS_SUITE = {'cts': 101,
                          'vts': 104}
@@ -259,12 +267,14 @@ ATEST_BUILD_ENV = {'RECORD_ALL_DEPS':'true', 'SOONG_COLLECT_JAVA_DEPS':'true',
 INDEX_DIR = os.path.join(os.getenv(ANDROID_HOST_OUT, ''), 'indexes')
 LOCATE_CACHE = os.path.join(INDEX_DIR, 'mlocate.db')
 LOCATE_CACHE_MD5 = os.path.join(INDEX_DIR, 'mlocate.md5')
+BUILDFILES_MD5 = os.path.join(INDEX_DIR, 'buildfiles.md5')
 INT_INDEX = os.path.join(INDEX_DIR, 'integration.idx')
 CLASS_INDEX = os.path.join(INDEX_DIR, 'classes.idx')
 CC_CLASS_INDEX = os.path.join(INDEX_DIR, 'cc_classes.idx')
 PACKAGE_INDEX = os.path.join(INDEX_DIR, 'packages.idx')
 QCLASS_INDEX = os.path.join(INDEX_DIR, 'fqcn.idx')
 MODULE_INDEX = os.path.join(INDEX_DIR, 'modules.idx')
+MODULE_INDEX_MD5 = os.path.join(INDEX_DIR, 'modules.md5')
 VERSION_FILE = os.path.join(os.path.dirname(__file__), 'VERSION')
 
 # Regeular Expressions
@@ -386,3 +396,12 @@ VERIFY_DATA_PATH = os.path.join(
 VERIFY_ENV_PATH = os.path.join(
     os.environ.get(ANDROID_BUILD_TOP, os.getcwd()),
     'tools/asuite/atest/test_data/test_environ.json')
+
+# Gtest Types
+GTEST_REGULAR = 'regular native test'
+GTEST_TYPED = 'typed test'
+GTEST_TYPED_PARAM = 'typed-parameterized test'
+GTEST_PARAM = 'value-parameterized test'
+
+# Tradefed log saver template for ATest
+ATEST_TF_LOG_SAVER = 'template/log/atest_log_saver'

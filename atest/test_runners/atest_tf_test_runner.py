@@ -74,8 +74,10 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
     _LOG_ARGS = ('--logcat-on-failure --atest-log-file-path={log_path} '
                  '--no-enable-granular-attempts '
                  '--proto-output-file={proto_path}')
-    _RUN_CMD = ('{env} {exe} {template} --template:map '
-                'test=atest {tf_customize_template} {log_args} {args}')
+    _RUN_CMD = ('{env} {exe} {template} '
+                '--template:map test=atest '
+                '--template:map log_saver={log_saver} '
+                '{tf_customize_template} {log_args} {args}')
     _BUILD_REQ = {'tradefed-core'}
     _RERUN_OPTION_GROUP = [constants.ITERATIONS,
                            constants.RERUN_UNTIL_FAILURE,
@@ -93,6 +95,7 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
         self.run_cmd_dict = {'env': self._get_ld_library_path(),
                              'exe': self.EXECUTABLE,
                              'template': self._TF_TEMPLATE,
+                             'log_saver': constants.ATEST_TF_LOG_SAVER,
                              'tf_customize_template': '',
                              'args': '',
                              'log_args': self._LOG_ARGS.format(**log_args)}
@@ -168,6 +171,9 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
                 atest_utils.handle_test_env_var(
                     verify_key, result_path=constants.VERIFY_ENV_PATH)
                 return 0
+            # Change CWD to repo root to ensure TF can find prebuilt SDKs
+            # for some path-sensitive tests like robolectric.
+            os.chdir(os.path.abspath(os.getenv(constants.ANDROID_BUILD_TOP)))
             if os.getenv(test_runner_base.OLD_OUTPUT_ENV_VAR):
                 result = self.run_tests_raw(test_infos, extra_args, reporter)
             result = self.run_tests_pretty(test_infos, extra_args, reporter)
@@ -419,7 +425,8 @@ class AtestTradefedTestRunner(test_runner_base.TestRunnerBase):
         # Add adb if we can't find it.
         for executable in EXEC_DEPENDENCIES:
             if self._is_missing_exec(executable):
-                build_req.add(executable)
+                if self.module_info.is_module(executable):
+                    build_req.add(executable)
         return build_req
 
     # pylint: disable=too-many-branches

@@ -21,10 +21,13 @@ Module Info class used to hold cached module-info.json.
 import json
 import logging
 import os
+import pickle
 import shutil
 import sys
 import tempfile
 import time
+
+from pathlib import Path
 
 import atest_utils
 import constants
@@ -54,6 +57,12 @@ class ModuleInfo:
                          module_info file regardless if it's created or not.
             module_file: String of path to file to load up. Used for testing.
         """
+        # when force_build == True, Atest can:
+        #   * rebuild module-info
+        #   * decide need_update_merged_file()
+        #   * re-index testable modules
+        self.force_build = force_build
+        self.mod_info_file_path = Path(module_file) if module_file else None
         module_info_target, name_to_module_info = self._load_module_info_file(
             force_build, module_file)
         self.name_to_module_info = name_to_module_info
@@ -125,6 +134,7 @@ class ModuleInfo:
         if not file_path:
             module_info_target, file_path = self._discover_mod_file_and_target(
                 force_build)
+            self.mod_info_file_path = Path(file_path)
         merged_file_path = self.get_atest_merged_info_path()
         if (not self.need_update_merged_file(force_build)
             and os.path.exists(merged_file_path)):
@@ -160,6 +170,42 @@ class ModuleInfo:
                 else:
                     path_to_module_info[path] = [mod_info]
         return path_to_module_info
+
+    def _index_testable_modules(self, content):
+        """Dump testable modules.
+
+        Args:
+            content: An object that will be written to the index file.
+        """
+        logging.debug('Indexing testable modules.')
+        index_dir = Path(constants.INDEX_DIR)
+        if not index_dir.is_dir():
+            os.makedirs(index_dir)
+        with open(constants.MODULE_INDEX, 'wb') as cache:
+            try:
+                pickle.dump(content, cache, protocol=2)
+                atest_utils.save_md5([constants.MODULE_INDEX],
+                                     constants.MODULE_INDEX_MD5)
+                logging.debug('Done')
+            except IOError:
+                logging.error('Failed in dumping %s', cache)
+                os.remove(cache)
+
+    def _get_testable_modules(self):
+        """Return all available testable modules and index them.
+
+        Returns:
+            Set of all testable modules.
+        """
+        modules = set()
+        begin = time.time()
+        for _, info in self.name_to_module_info.items():
+            if self.is_testable_module(info):
+                modules.add(info.get(constants.MODULE_NAME))
+        self._index_testable_modules(modules)
+        logging.debug('Probing all testable modules took %ss',
+                      time.time() - begin)
+        return modules
 
     def is_module(self, name):
         """Return True if name is a module, False otherwise."""
@@ -214,22 +260,44 @@ class ModuleInfo:
     def get_testable_modules(self, suite=None):
         """Return the testable modules of the given suite name.
 
+        Atest does not index testable modules against compatibility_suites. When
+        suite was given, or the index file was interrupted, always run
+        _get_testable_modules() and re-index.
+
         Args:
-            suite: A string of suite name. Set to None to return all testable
-            modules.
+            suite: A string of suite name.
 
         Returns:
-            List of testable modules. Empty list if non-existent.
-            If suite is None, return all the testable modules in module-info.
+            If suite is not given, return all the testable modules in module
+            info, otherwise return only modules that belong to the suite.
         """
         modules = set()
-        for _, info in self.name_to_module_info.items():
-            if self.is_testable_module(info):
-                if suite:
+        start = time.time()
+        # 1. modules.idx did not change; read it directly.
+        if atest_utils.check_md5(constants.MODULE_INDEX_MD5):
+            if os.path.isfile(constants.MODULE_INDEX) and not suite:
+                with open(constants.MODULE_INDEX, 'rb') as cache:
+                    try:
+                        modules = pickle.load(cache, encoding="utf-8")
+                    except UnicodeDecodeError:
+                        modules = pickle.load(cache)
+                    # when module indexing was interrupted.
+                    except EOFError:
+                        pass
+        # 2. modules.idx does not yet exist or has changed.
+        # Will generate modules.idx for speeding up the next query.
+        if not modules:
+            if not suite:
+                modules = self._get_testable_modules()
+            else:
+                for module_name in self._get_testable_modules():
+                    info = self.get_module_info(module_name)
                     if self.is_suite_in_compatibility_suites(suite, info):
                         modules.add(info.get(constants.MODULE_NAME))
-                else:
-                    modules.add(info.get(constants.MODULE_NAME))
+        duration = time.time() - start
+        metrics.LocalDetectEvent(
+            detect_type=constants.DETECT_TYPE_TESTABLE_MODULES,
+            result=int(duration))
         return modules
 
     def is_testable_module(self, mod_info):
@@ -283,15 +351,20 @@ class ModuleInfo:
     def get_robolectric_test_name(self, module_name):
         """Returns runnable robolectric module name.
 
-        There are at least 2 modules in every robolectric module path, return
-        the module that we can run as a build target.
+        This method is for legacy robolectric tests and returns one of associated
+        modules. The pattern is determined by the amount of shards:
+
+        10 shards:
+            FooTests -> RunFooTests0, RunFooTests1 ... RunFooTests9
+        No shard:
+            FooTests -> RunFooTests
 
         Arg:
             module_name: String of module.
 
         Returns:
-            String of module that is the runnable robolectric module, None if
-            none could be found.
+            String of the first-matched associated module that belongs to the
+            actual robolectric module, None if nothing has been found.
         """
         module_name_info = self.get_module_info(module_name)
         if not module_name_info:
@@ -305,25 +378,69 @@ class ModuleInfo:
         return None
 
     def is_robolectric_test(self, module_name):
-        """Check if module is a robolectric test.
-
-        A module can be a robolectric test if the specified module has their
-        class set as ROBOLECTRIC (or shares their path with a module that does).
+        """Check if the given module is a robolectric test.
 
         Args:
             module_name: String of module to check.
 
         Returns:
-            True if the module is a robolectric module, else False.
+            Boolean whether it's a robotest or not.
         """
-        # Check 1, module class is ROBOLECTRIC
-        mod_info = self.get_module_info(module_name)
-        if self.is_robolectric_module(mod_info):
-            return True
-        # Check 2, shared modules in the path have class ROBOLECTRIC_CLASS.
-        if self.get_robolectric_test_name(module_name):
+        if self.get_robolectric_type(module_name):
             return True
         return False
+
+    def get_robolectric_type(self, module_name):
+        """Check if the given module is a robolectric test and return type of it.
+
+        Robolectric declaration is converting from Android.mk to Android.bp, and
+        in the interim Atest needs to support testing both types of tests.
+
+        The modern robolectric tests defined by 'android_robolectric_test' in an
+        Android.bp file can can be run in Tradefed Test Runner:
+
+            SettingsRoboTests -> Tradefed Test Runner
+
+        Legacy tests defined in an Android.mk can only run with the 'make' way.
+
+            SettingsRoboTests -> make RunSettingsRoboTests0
+
+        To determine whether the test is a modern/legacy robolectric test:
+            1. Traverse all modules share the module path. If one of the
+               modules has a ROBOLECTRIC class, it is a robolectric test.
+            2. If found an Android.bp in that path, it's a modern one, otherwise
+               it's a legacy test and will go to the build route.
+
+        Args:
+            module_name: String of module to check.
+
+        Returns:
+            0: not a robolectric test.
+            1: a modern robolectric test(defined in Android.bp)
+            2: a legacy robolectric test(defined in Android.mk)
+        """
+        not_a_robo_test = 0
+        module_name_info = self.get_module_info(module_name)
+        if not module_name_info:
+            return not_a_robo_test
+        mod_path = module_name_info.get(constants.MODULE_PATH, [])
+        if mod_path:
+            # Check1: If the associated modules are "ROBOLECTRIC".
+            is_a_robotest = False
+            modules_in_path = self.get_module_names(mod_path[0])
+            for mod in modules_in_path:
+                mod_info = self.get_module_info(mod)
+                if self.is_robolectric_module(mod_info):
+                    is_a_robotest = True
+                    break
+            if not is_a_robotest:
+                return not_a_robo_test
+            # Check 2: If found Android.bp in path, call it a modern test.
+            bpfile = os.path.join(self.root_dir, mod_path[0], 'Android.bp')
+            if os.path.isfile(bpfile):
+                return constants.ROBOTYPE_MODERN
+            return constants.ROBOTYPE_LEGACY
+        return not_a_robo_test
 
     def is_auto_gen_test_config(self, module_name):
         """Check if the test config file will be generated automatically.
@@ -342,6 +459,10 @@ class ModuleInfo:
 
     def is_robolectric_module(self, mod_info):
         """Check if a module is a robolectric module.
+
+        This method is for legacy robolectric tests that the associated modules
+        contain:
+            'class': ['ROBOLECTRIC']
 
         Args:
             mod_info: ModuleInfo to check.
@@ -538,25 +659,27 @@ class ModuleInfo:
         Returns:
             String for atest_merged_dep.json.
         """
-        return os.path.join(atest_utils.get_build_out_dir(),
-                            'soong', _MERGED_INFO)
+        # Move the merged file to the same folder as module-info.json due to it
+        # will not be update if lunch target be changed.
+        return os.path.join(os.environ.get(constants.ANDROID_PRODUCT_OUT, ''),
+                            _MERGED_INFO)
 
     @staticmethod
     def get_java_dep_info_path():
-        """Returns the path for atest_merged_dep.json.
+        """Returns the path for module_bp_java_deps.json
 
         Returns:
-            String for atest_merged_dep.json.
+            String for module_bp_java_deps.json.
         """
         return os.path.join(atest_utils.get_build_out_dir(),
                             'soong', _JAVA_DEP_INFO)
 
     @staticmethod
     def get_cc_dep_info_path():
-        """Returns the path for atest_merged_dep.json.
+        """Returns the path for module_bp_cc_deps.json.
 
         Returns:
-            String for atest_merged_dep.json.
+            String for module_bp_cc_deps.json.
         """
         return os.path.join(atest_utils.get_build_out_dir(),
                             'soong', _CC_DEP_INFO)
@@ -573,16 +696,17 @@ class ModuleInfo:
     def need_update_merged_file(self, force_build=False):
         """Check if need to update/generated atest_merged_dep.
 
-        If force_build, always update merged info.
-        If not force build, if soong info exist but merged inforamtion not exist,
-        need to update merged file.
+        If force_build: always update merged info.
+        If not force build: only update merged info when soong info exists and
+            the merged info does not.
 
         Args:
-            force_build: Boolean to indicate that if user want to rebuild
-                         module_info file regardless if it's created or not.
+            force_build: Boolean that indicates if users want to arbitrarily
+            rebuild module_info file regardless of the existence of soong info
+            and the merged info.
 
         Returns:
-            True if atest_merged_dep should be updated, false otherwise.
+            True if atest_merged_dep.json should be updated, false otherwise.
         """
         return (force_build or
                 (self.has_soong_info() and
