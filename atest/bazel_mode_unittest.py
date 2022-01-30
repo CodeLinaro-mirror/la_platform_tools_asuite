@@ -606,27 +606,96 @@ class ModuleSharedLibGenerationTest(GenerationTestFixture):
         self.assertNotInBuildFile('            "//:libhello",\n')
         self.assertTargetNotInWorkspace('libhello')
 
-    def test_raise_when_shared_lib_install_path_for_unsupported_config(self):
+    def test_not_generate_when_shared_lib_installed_path_unsupported(self):
         unsupported_install_path = 'out/other'
         mod_info = self.create_module_info(modules=[
             supported_test_module(shared_libs=['libhello']),
-            module('libhello', installed=[unsupported_install_path]),
+            shared_lib(module('libhello',
+                              installed=[unsupported_install_path])),
         ])
 
-        with self.assertRaises(Exception) as context:
-            self.run_generator(mod_info)
+        self.run_generator(mod_info)
 
-        self.assertIn(unsupported_install_path, str(context.exception))
+        self.assertNotInBuildFile('"//:libhello",\n')
+        self.assertTargetNotInWorkspace('libhello')
 
-    def test_raise_when_shared_lib_module_install_path_ambiguous(self):
+    def test_not_generate_when_shared_lib_install_path_ambiguous(self):
         ambiguous_install_path = 'out/f1'
         mod_info = self.create_module_info(modules=[
             supported_test_module(shared_libs=['libhello']),
             module(name='libhello', installed=[ambiguous_install_path]),
         ])
 
-        with self.assertRaises(Exception):
-            self.run_generator(mod_info)
+        self.run_generator(mod_info)
+
+        self.assertNotInBuildFile('"//:libhello",\n')
+        self.assertTargetNotInWorkspace('libhello')
+
+    def test_generate_target_for_rlib_dependency(self):
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(dependencies=['libhello']),
+            rlib(module(name='libhello'))
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertInBuildFile(
+            'soong_uninstalled_prebuilt(\n'
+            '    name = "libhello",\n'
+            '    module_name = "libhello",\n'
+            ')\n'
+        )
+
+    def test_generate_target_for_rlib_dylib_dependency(self):
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(dependencies=['libhello']),
+            rlib(module(name='libhello', dependencies=['libworld'])),
+            host_only_config(dylib(module(name='libworld')))
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertTargetInWorkspace('libworld')
+
+    def test_generate_target_for_dylib_dependency(self):
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(dependencies=['libhello']),
+            host_only_config(dylib(module(name='libhello')))
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertInBuildFile(
+            'soong_prebuilt(\n'
+            '    name = "libhello",\n'
+            '    module_name = "libhello",\n'
+        )
+
+    def test_generate_target_for_uninstalled_dylib_dependency(self):
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(dependencies=['libhello']),
+            dylib(module(name='libhello', installed=[]))
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertInBuildFile(
+            'soong_uninstalled_prebuilt(\n'
+            '    name = "libhello",\n'
+            '    module_name = "libhello",\n'
+            ')\n'
+        )
+
+    def test_not_generate_target_for_non_runtime_dependency(self):
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(dependencies=['libhello']),
+            host_module(name='libhello', classes=['NOT_SUPPORTED'])
+        ])
+
+        self.run_generator(mod_info)
+
+        self.assertNotInBuildFile('"//:libhello",\n')
+        self.assertTargetNotInWorkspace('libhello')
 
 
 class SharedLibPrebuiltTargetGenerationTest(GenerationTestFixture):
@@ -653,6 +722,41 @@ class SharedLibPrebuiltTargetGenerationTest(GenerationTestFixture):
             package_path.joinpath('libhello/host/a/c/f2'), host_file2)
         self.assertSymlinkTo(
             package_path.joinpath('libhello/device/a/b/f1'), device_file1)
+
+    def test_create_symlinks_to_installed_path_for_non_tf_testable_deps(self):
+        host_file = self.host_out_path.joinpath('a/b/f1')
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(shared_libs=['libhello']),
+            host_module(
+                name='libhello',
+                installed=[str(host_file)],
+                auto_test_config=['true']
+            )
+        ])
+        package_path = self.workspace_out_path
+
+        self.run_generator(mod_info)
+
+        self.assertSymlinkTo(
+            package_path.joinpath('libhello/host/a/b/f1'), host_file)
+
+    def test_create_symlinks_to_installed_path_for_lib_with_test_config(self):
+        host_file = self.host_out_path.joinpath('a/b/f1')
+        mod_info = self.create_module_info(modules=[
+            supported_test_module(shared_libs=['libhello']),
+            host_module(
+                name='libhello',
+                installed=[str(host_file)],
+                path='src/lib'
+            )
+        ])
+        self.fs.create_file(Path('src/lib/AndroidTest.xml'), contents='')
+        package_path = self.workspace_out_path
+
+        self.run_generator(mod_info)
+
+        self.assertSymlinkTo(
+            package_path.joinpath('src/lib/libhello/host/a/b/f1'), host_file)
 
     def test_generate_for_host_only_shared_lib_dependency(self):
         mod_info = self.create_module_info(modules=[
@@ -750,24 +854,49 @@ def test_module(**kwargs):
     return test(module(**kwargs))
 
 
-def module(name=None, path=None, shared_libs=None, installed=None):
+# pylint: disable=too-many-arguments
+def module(
+    name=None,
+    path=None,
+    installed=None,
+    classes=None,
+    auto_test_config=None,
+    shared_libs=None,
+    dependencies=None,
+):
     name = name or 'libhello'
 
     m = {}
 
     m['module_name'] = name
+    m['class'] = classes
     m['path'] = [path or '']
     m['installed'] = installed or []
-    m['test_class'] = []
-    m['dependencies'] = []
     m['is_unit_test'] = 'false'
+    m['auto_test_config'] = auto_test_config or []
     m['shared_libs'] = shared_libs or []
-
+    m['dependencies'] = dependencies or []
     return m
 
 
 def test(info):
     info['auto_test_config'] = ['true']
+    return info
+
+
+def shared_lib(info):
+    info['class'] = ['SHARED_LIBRARIES']
+    return info
+
+
+def rlib(info):
+    info['class'] = ['RLIB_LIBRARIES']
+    info['installed'] = []
+    return info
+
+
+def dylib(info):
+    info['class'] = ['DYLIB_LIBRARIES']
     return info
 
 

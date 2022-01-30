@@ -285,6 +285,7 @@ class ResultReporter:
         self.collect_only = collect_only
         self.flakes_info = flakes_info
         self.test_result_link = None
+        self.device_count = 0
 
     def process_test_result(self, test):
         """Given the results of a single test, update stats and print results.
@@ -371,7 +372,11 @@ class ResultReporter:
         tests_ret = constants.EXIT_CODE_SUCCESS
         if not self.runners:
             return tests_ret
-        print('\n{}'.format(au.colorize('Summary', constants.CYAN)))
+        device_detail =  (
+            ' (Test executed with {} device(s).)'.format(self.device_count)
+        ) if self.device_count else ''
+        print('\n{}'.format(au.colorize('Summary{}'.format(device_detail),
+        constants.CYAN)))
         print(au.delimiter('-', 7))
         iterations = len(ITER_SUMMARY)
         for iter_num, summary_list in ITER_SUMMARY.items():
@@ -447,15 +452,33 @@ class ResultReporter:
                 matched = False
                 filter_re = atest_configs.GLOBAL_ARGS.aggregate_metric_filter
                 logging.debug('Aggregate metric filter: %s', filter_re)
+                test_methods = []
+                # Collect all test methods
+                if filter_re:
+                    test_re = re.compile(r'\n\n(.*)\n\n', re.MULTILINE)
+                    test_methods = re.findall(test_re, f.read())
+                    f.seek(0)
+                    # The first line of the file is also a test method but could
+                    # not parsed by test_re; add the first line manually.
+                    first_line = f.readline()
+                    test_methods.insert(0, str(first_line).strip())
+                    f.seek(0)
                 for line in f.readlines():
-                    if (filter_re and
-                        not re.match(re.compile(filter_re), line)):
-                        continue
-                    matched = True
-                    print(' ' * 4 + str(line).strip())
+                    stripped_line = str(line).strip()
+                    if filter_re:
+                        if stripped_line in test_methods:
+                            print()
+                            au.colorful_print(
+                                ' ' * 4 + stripped_line, constants.MAGENTA)
+                        if re.match(re.compile(filter_re), line):
+                            matched = True
+                            print(' ' * 4 + stripped_line)
+                    else:
+                        matched = True
+                        print(' ' * 4 + stripped_line)
                 if not matched:
                     au.colorful_print(
-                        '  Nothing returned by the pattern: {}'.format(
+                        '  Warning: Nothing returned by the pattern: {}'.format(
                             filter_re), constants.RED)
                 print()
 
@@ -649,7 +672,7 @@ class ResultReporter:
             print('%s (%s %s)' % (au.colorize(test.test_run_name,
                                               constants.BLUE),
                                   test.group_total,
-                                  'Test' if test.group_total <= 1 else 'Tests'))
+                                  'Test(s)'))
         if test.status == test_runner_base.ERROR_STATUS:
             print('RUNNER ERROR: %s\n' % test.details)
             self.pre_test = test
