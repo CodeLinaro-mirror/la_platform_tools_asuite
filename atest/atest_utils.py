@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import pickle
+import platform
 import re
 import shutil
 import subprocess
@@ -39,10 +40,9 @@ import time
 import zipfile
 
 from multiprocessing import Process
+from pathlib import Path
 
 import xml.etree.ElementTree as ET
-
-from distutils.util import strtobool
 
 # This is a workaround of b/144743252, where the http.client failed to loaded
 # because the googleapiclient was found before the built-in libs; enabling
@@ -104,8 +104,6 @@ CMD_RESULT_PATH = os.path.join(os.environ.get(constants.ANDROID_BUILD_TOP,
                                'test_commands.json')
 BUILD_TOP_HASH = hashlib.md5(os.environ.get(constants.ANDROID_BUILD_TOP, '').
                              encode()).hexdigest()
-TEST_INFO_CACHE_ROOT = os.path.join(os.path.expanduser('~'), '.atest',
-                                    'info_cache', BUILD_TOP_HASH[:8])
 _DEFAULT_TERMINAL_WIDTH = 80
 _DEFAULT_TERMINAL_HEIGHT = 25
 _BUILD_CMD = 'build/soong/soong_ui.bash'
@@ -252,24 +250,31 @@ def _run_limited_output(cmd, env_vars=None):
 def get_build_out_dir():
     """Get android build out directory.
 
+    The order of the rules are:
+    1. OUT_DIR
+    2. OUT_DIR_COMMON_BASE
+    3. ANDROID_BUILD_TOP/out
+
     Returns:
         String of the out directory.
     """
-    build_top = os.environ.get(constants.ANDROID_BUILD_TOP)
+    build_top = os.environ.get(constants.ANDROID_BUILD_TOP, '/')
     # Get the out folder if user specified $OUT_DIR
     custom_out_dir = os.environ.get(constants.ANDROID_OUT_DIR)
     custom_out_dir_common_base = os.environ.get(
         constants.ANDROID_OUT_DIR_COMMON_BASE)
     user_out_dir = None
+    # If OUT_DIR == /output, the output dir will always be /outdir
+    # regardless of branch names. (Not recommended.)
     if custom_out_dir:
         if os.path.isabs(custom_out_dir):
             user_out_dir = custom_out_dir
         else:
             user_out_dir = os.path.join(build_top, custom_out_dir)
+    # https://source.android.com/setup/build/initializing#using-a-separate-output-directory
+    # If OUT_DIR_COMMON_BASE is /output and the source tree is /src/master1,
+    # the output dir will be /output/master1.
     elif custom_out_dir_common_base:
-        # When OUT_DIR_COMMON_BASE is set, the output directory for each
-        # separate source tree is named after the directory holding the
-        # source tree.
         build_top_basename = os.path.basename(build_top)
         if os.path.isabs(custom_out_dir_common_base):
             user_out_dir = os.path.join(custom_out_dir_common_base,
@@ -651,6 +656,9 @@ def _normalize(cmd_list):
         if cmd.startswith('--proto-output-file='):
             _cmd.remove(cmd)
             continue
+        if cmd.startswith('--log-root-path'):
+            _cmd.remove(cmd)
+            continue
         if _BUILD_CMD in cmd:
             _cmd.remove(cmd)
             _cmd.append(os.path.join('./', _BUILD_CMD))
@@ -696,10 +704,13 @@ def md5sum(filename):
     Returns:
         A string of hashed MD5 checksum.
     """
-    if not os.path.isfile(filename):
+    filename = Path(filename)
+    if not filename.is_file():
         return ""
     with open(filename, 'rb') as target:
         content = target.read()
+    if not isinstance(content, bytes):
+        content = content.encode('utf-8')
     return hashlib.md5(content).hexdigest()
 
 def check_md5(check_file, missing_ok=False):
@@ -747,13 +758,12 @@ def save_md5(filenames, save_file):
         filenames: A list of filenames.
         save_file: Filename for storing files and their md5 checksums.
     """
-    if os.path.isfile(save_file):
-        os.remove(save_file)
     data = {}
-    for name in filenames:
-        if not os.path.isfile(name):
-            logging.warning('%s is not a file.', name)
-        data.update({name: md5sum(name)})
+    for f in filenames:
+        name = Path(f)
+        if not name.is_file():
+            logging.warning(' ignore %s: not a file.', name)
+        data.update({str(name): md5sum(name)})
     with open(save_file, 'w+') as _file:
         json.dump(data, _file)
 
@@ -776,7 +786,7 @@ def get_cache_root():
                        constants.ANDROID_PRODUCT_OUT))
     branch_target_hash = hashlib.md5(
         (constants.MODE + manifest_branch + build_target).encode()).hexdigest()
-    return os.path.join(os.path.expanduser('~'), '.atest','info_cache',
+    return os.path.join(get_misc_dir(), '.atest', 'info_cache',
                         branch_target_hash[:8])
 
 def get_test_info_cache_path(test_reference, cache_root=None):
@@ -1258,6 +1268,23 @@ def prompt_with_yn_result(msg, default=True):
     except (ValueError, KeyboardInterrupt):
         return default
 
+def strtobool(val):
+    """Convert a string representation of truth to True or False.
+
+    Args:
+        val: a string of input value.
+
+    Returns:
+        True when values are 'y', 'yes', 't', 'true', 'on', and '1';
+        False when 'n', 'no', 'f', 'false', 'off', and '0'.
+        Raises ValueError if 'val' is anything else.
+    """
+    if val.lower() in ('y', 'yes', 't', 'true', 'on', '1'):
+        return True
+    if val.lower() in ('n', 'no', 'f', 'false', 'off', '0'):
+        return False
+    raise ValueError("invalid truth value %r" % (val,))
+
 def get_android_junit_config_filters(test_config):
     """Get the dictionary of a input config for junit config's filters
 
@@ -1297,6 +1324,22 @@ def get_config_parameter(test_config):
                 value = tag.attrib['value'].strip()
                 parameters.add(value)
     return parameters
+
+def get_config_device(test_config):
+    """Get all the device names from the input config
+
+    Args:
+        test_config: The path of the test config.
+    Returns:
+        A set include all the device name of the input config.
+    """
+    devices = set()
+    xml_root = ET.parse(test_config).getroot()
+    device_tags = xml_root.findall('.//device')
+    for tag in device_tags:
+        name = tag.attrib['name'].strip()
+        devices.add(name)
+    return devices
 
 def get_mainline_param(test_config):
     """Get all the mainline-param values for the input config
@@ -1590,7 +1633,70 @@ def run_multi_proc(func, *args, **kwargs):
     Returns:
         multiprocessing.Process object.
     """
-
     proc = Process(target=func, *args, **kwargs)
     proc.start()
     return proc
+
+def get_prebuilt_sdk_tools_dir():
+    """Get the path for the prebuilt sdk tools root dir.
+
+    Returns: The absolute path of prebuilt sdk tools directory.
+    """
+    build_top = Path(os.environ.get(constants.ANDROID_BUILD_TOP, ''))
+    return build_top.joinpath(
+        'prebuilts/sdk/tools/', str(platform.system()).lower(), 'bin')
+
+
+def is_writable(path):
+    """Check if the given path is writable.
+
+    Returns: True if input path is writable, False otherwise.
+    """
+    if not os.path.exists(path):
+        return is_writable(os.path.dirname(path))
+    return os.access(path, os.W_OK)
+
+
+def get_misc_dir():
+    """Get the path for the ATest data root dir.
+
+    Returns: The absolute path of the ATest data root dir.
+    """
+    home_dir = os.path.expanduser('~')
+    if is_writable(home_dir):
+        return home_dir
+    return get_build_out_dir()
+
+def get_full_annotation_class_name(module_info, class_name):
+    """ Get fully qualified class name from a class name.
+
+    If the given keyword(class_name) is "smalltest", this method can search
+    among source codes and grep the accurate annotation class name:
+
+        android.test.suitebuilder.annotation.SmallTest
+
+    Args:
+        module_info: A dict of module_info.
+        class_name: A string of class name.
+
+    Returns:
+        A string of fully qualified class name, empty string otherwise.
+    """
+    fullname_re = re.compile(
+        r'import\s+(?P<fqcn>{})(|;)$'.format(class_name), re.I)
+    keyword_re = re.compile(
+        r'import\s+(?P<fqcn>.*\.{})(|;)$'.format(class_name), re.I)
+    build_top = Path(os.environ.get(constants.ANDROID_BUILD_TOP, ''))
+    for f in module_info.get('srcs'):
+        full_path = build_top.joinpath(f)
+        with open(full_path, 'r') as cache:
+            for line in cache.readlines():
+                # Accept full class name.
+                match = fullname_re.match(line)
+                if match:
+                    return match.group('fqcn')
+                # Search annotation class from keyword.
+                match = keyword_re.match(line)
+                if match:
+                    return match.group('fqcn')
+    return ""
