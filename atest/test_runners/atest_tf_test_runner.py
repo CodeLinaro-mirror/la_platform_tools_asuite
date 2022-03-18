@@ -31,13 +31,14 @@ from functools import partial
 from pathlib import Path
 from typing import List, Tuple
 
+import atest_configs
 import atest_error
 import atest_utils
 import constants
 import module_info
 import result_reporter
 
-from atest_enum import DetectType
+from atest_enum import DetectType, ExitCode
 from logstorage import atest_gcp_utils
 from logstorage import logstorage_utils
 from metrics import metrics
@@ -215,7 +216,7 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
             result = self.run_tests_pretty(test_infos, extra_args, reporter)
         except atest_error.DryRunVerificationError as e:
             atest_utils.colorful_print(str(e), constants.RED)
-            return constants.EXIT_CODE_VERIFY_FAILURE
+            return ExitCode.VERIFY_FAILURE
         finally:
             if inv:
                 try:
@@ -244,7 +245,7 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
         iterations = self._generate_iterations(extra_args)
         reporter.register_unsupported_runner(self.NAME)
 
-        ret_code = constants.EXIT_CODE_SUCCESS
+        ret_code = ExitCode.SUCCESS
         for _ in range(iterations):
             run_cmds = self.generate_run_commands(test_infos, extra_args)
             subproc = self.run(run_cmds[0], output_to_stdout=True,
@@ -264,7 +265,7 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
             0 if tests succeed, non-zero otherwise.
         """
         iterations = self._generate_iterations(extra_args)
-        ret_code = constants.EXIT_CODE_SUCCESS
+        ret_code = ExitCode.SUCCESS
         for _ in range(iterations):
             server = self._start_socket_server()
             run_cmds = self.generate_run_commands(test_infos, extra_args,
@@ -511,13 +512,6 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
                 for exclude_parameter in constants.DEFAULT_EXCLUDE_PARAS:
                     args_to_append.append('--exclude-module-parameters')
                     args_to_append.append(exclude_parameter)
-        # If multiple devices in test config, automatically append
-        # --replicate-parent-setup and --multi-device-count
-        device_count = extra_args.get(constants.DEVICE_COUNT_CONFIG, 0)
-        if device_count > 1:
-            args_to_append.append('--replicate-parent-setup')
-            args_to_append.append('--multi-device-count')
-            args_to_append.append(str(device_count))
         return args_to_append, args_not_supported
 
     def _generate_metrics_folder(self, extra_args):
@@ -591,6 +585,14 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
             test_args.extend(['--no-early-device-release'])
 
         args_to_add, args_not_supported = self._parse_extra_args(test_infos, extra_args)
+
+        # If multiple devices in test config, automatically append
+        # --replicate-parent-setup and --multi-device-count
+        device_count = atest_configs.GLOBAL_ARGS.device_count_config
+        if device_count and device_count > 1:
+            args_to_add.append('--replicate-parent-setup')
+            args_to_add.append('--multi-device-count')
+            args_to_add.append(str(device_count))
 
         # TODO(b/122889707) Remove this after finding the root cause.
         env_serial = os.environ.get(constants.ANDROID_SERIAL)
