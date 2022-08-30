@@ -532,6 +532,16 @@ class HostUnitTestModuleTestTargetGenerationTest(GenerationTestFixture):
 
         self.assertIn('adb', str(context.exception))
 
+    def test_warning_when_prerequisite_module_has_multiple_path(self):
+        mod_info = self.create_module_info(modules=[
+            host_unit_test_module(),
+        ])
+        mod_info.name_to_module_info['adb'].get('path').append('the/2nd/path')
+
+        with self.assertWarns(Warning) as context:
+            self.run_generator(mod_info)
+
+        self.assertIn('adb', str(context.warnings[0].message))
 
 class ModulePrebuiltTargetGenerationTest(GenerationTestFixture):
     """Tests for module prebuilt target generation."""
@@ -1672,6 +1682,15 @@ class BazelTestRunnerTest(unittest.TestCase):
             '--build_metadata=ab_branch=master',
             '--build_metadata=ab_target=aosp_cf_x86_64_phone-userdebug'
         ], cmd[0])
+
+    def test_generate_run_command_with_verbose_args(self):
+        test_infos = [test_info_of('test1')]
+        runner = self.create_bazel_test_runner_for_tests(test_infos)
+        extra_args = {constants.VERBOSE: True}
+
+        cmd = runner.generate_run_commands(test_infos, extra_args)
+
+        self.assertTokensIn(['--test_output=all'], cmd[0])
 
     def create_bazel_test_runner(self,
                                  modules,
