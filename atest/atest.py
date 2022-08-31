@@ -232,6 +232,7 @@ def get_extra_args(args):
                 'bazel_arg': constants.BAZEL_ARG,
                 'collect_tests_only': constants.COLLECT_TESTS_ONLY,
                 'custom_args': constants.CUSTOM_ARGS,
+                'device_only': constants.DEVICE_ONLY,
                 'disable_teardown': constants.DISABLE_TEARDOWN,
                 'dry_run': constants.DRY_RUN,
                 'enable_device_preparer': constants.ENABLE_DEVICE_PREPARER,
@@ -584,6 +585,11 @@ def _run_test_mapping_tests(results_dir, test_infos, extra_args, mod_info):
         atest_utils.colorful_print(
             'Option `--host` specified. Skip running device tests.',
             constants.MAGENTA)
+    elif extra_args.get(constants.DEVICE_ONLY):
+        test_runs = [(device_test_infos, extra_args, DEVICE_TESTS)]
+        atest_utils.colorful_print(
+            'Option `--device-only` specified. Skip running deviceless tests.',
+            constants.MAGENTA)
     else:
         test_runs.append((device_test_infos, extra_args, DEVICE_TESTS))
 
@@ -890,6 +896,27 @@ def get_device_count_config(test_infos, mod_info):
                 max_count = max(len(devices), max_count)
     return max_count
 
+
+def _get_host_framework_targets(mod_info):
+    """Get the build target name for all the existing jars under host framework.
+
+    Args:
+        mod_info: ModuleInfo object.
+
+    Returns:
+        A set of build target name under $(ANDROID_HOST_OUT)/framework.
+    """
+    host_targets = set()
+    framework_host_dir = Path(
+        os.environ.get(constants.ANDROID_HOST_OUT)).joinpath('framework')
+    if framework_host_dir.is_dir():
+        jars = framework_host_dir.glob('*.jar')
+        for jar in jars:
+            if mod_info.get_module_info(jar.stem):
+                host_targets.add(jar.stem)
+        logging.debug('Found exist host framework target:%s', host_targets)
+    return host_targets
+
 # pylint: disable=too-many-statements
 # pylint: disable=too-many-branches
 # pylint: disable=too-many-return-statements
@@ -930,9 +957,14 @@ def main(argv, results_dir, args):
                              result=int(time.time() - mod_start))
     atest_utils.generate_buildfiles_checksum()
     if args.bazel_mode:
+        start = time.time()
         bazel_mode.generate_bazel_workspace(
             mod_info,
             enabled_features=set(args.bazel_mode_features or []))
+        metrics.LocalDetectEvent(
+            detect_type=DetectType.BAZEL_WORKSPACE_GENERATE_TIME,
+            result=int(time.time() - start))
+
     translator = cli_translator.CLITranslator(
         mod_info=mod_info,
         print_cache_msg=not args.clear_cache,
@@ -1017,6 +1049,9 @@ def main(argv, results_dir, args):
         # Add module-info.json target to the list of build targets to keep the
         # file up to date.
         build_targets.add(mod_info.module_info_target)
+        # Force rebuilt all jars under $ANDROID_HOST_OUT to prevent old version
+        # host jars break the test.
+        build_targets |= _get_host_framework_targets(mod_info)
         build_start = time.time()
         success = atest_utils.build(build_targets, verbose=args.verbose,
                                     mm_build_targets=mm_build_targets)
