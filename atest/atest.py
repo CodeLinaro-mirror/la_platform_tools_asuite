@@ -234,6 +234,7 @@ def get_extra_args(args):
                 'custom_args': constants.CUSTOM_ARGS,
                 'device_only': constants.DEVICE_ONLY,
                 'disable_teardown': constants.DISABLE_TEARDOWN,
+                'disable_upload_result': constants.DISABLE_UPLOAD_RESULT,
                 'dry_run': constants.DRY_RUN,
                 'enable_device_preparer': constants.ENABLE_DEVICE_PREPARER,
                 'flakes_info': constants.FLAKES_INFO,
@@ -839,7 +840,7 @@ def acloud_create_validator(results_dir, args):
     if not any((args.acloud_create, args.start_avd)):
         return None, None
     if args.start_avd:
-        args.acloud_create = ['--num=1']
+        args.acloud_create = []
     acloud_args = ' '.join(args.acloud_create)
     target = os.getenv('TARGET_PRODUCT', "")
     if 'cf_x86' in target:
