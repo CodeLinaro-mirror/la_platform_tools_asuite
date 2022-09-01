@@ -71,6 +71,7 @@ ANNOTATION_FILTER = 'ANNOTATION_FILTER'
 BAZEL_ARG = 'BAZEL_ARG'
 TEST_FILTER = 'TEST_FILTER'
 TEST_TIMEOUT = 'TEST_TIMEOUT'
+VERBOSE = 'VERBOSE'
 
 # Robolectric Types:
 ROBOTYPE_MODERN = 1
@@ -102,6 +103,8 @@ MODULE_SHARED_LIBS = 'shared_libs'
 MODULE_RUNTIME_DEPS = 'runtime_dependencies'
 MODULE_DATA_DEPS = 'data_dependencies'
 MODULE_SUPPORTED_VARIANTS = 'supported_variants'
+MODULE_LIBS = 'libs'
+MODULE_STATIC_LIBS = 'static_libs'
 
 
 # Env constants
