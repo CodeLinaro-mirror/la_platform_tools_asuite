@@ -932,6 +932,7 @@ def main(argv, results_dir, args):
     Returns:
         Exit code.
     """
+    _begin_time = time.time()
     _configure_logging(args.verbose)
     _validate_args(args)
     metrics_utils.get_start_time()
@@ -954,8 +955,9 @@ def main(argv, results_dir, args):
     smart_rebuild = need_rebuild_module_info(args.rebuild_module_info)
     mod_start = time.time()
     mod_info = module_info.ModuleInfo(force_build=smart_rebuild)
-    metrics.LocalDetectEvent(detect_type=DetectType.MODULE_INFO_INIT_TIME,
-                             result=int(time.time() - mod_start))
+    mod_stop = time.time() - mod_start
+    metrics.LocalDetectEvent(detect_type=DetectType.MODULE_INFO_INIT_MS,
+                             result=int(mod_stop * 1000))
     atest_utils.generate_buildfiles_checksum()
     if args.bazel_mode:
         start = time.time()
@@ -1105,6 +1107,13 @@ def main(argv, results_dir, args):
     tests_exit_code = ExitCode.SUCCESS
     test_start = time.time()
     if constants.TEST_STEP in steps:
+        # Only send duration to metrics when passing --test and not --build.
+        if constants.BUILD_STEP not in steps:
+            _init_and_find = time.time() - _begin_time
+            logging.debug('Initiation and finding tests took %ss', _init_and_find)
+            metrics.LocalDetectEvent(
+                detect_type=DetectType.INIT_AND_FIND_MS,
+                result=int(_init_and_find*1000))
         perm_consistency_metrics(test_infos, mod_info, args)
         if not is_from_test_mapping(test_infos):
             tests_exit_code, reporter = test_runner_handler.run_all_tests(
