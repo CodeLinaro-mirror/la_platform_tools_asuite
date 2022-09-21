@@ -565,7 +565,11 @@ class TestTarget(Target):
     })
 
     DEVICE_TEST_PREREQUISITES = frozenset(DEVICELESS_TEST_PREREQUISITES.union(
-        frozenset({'aapt', 'compatibility-tradefed'})))
+        frozenset({
+            'aapt',
+            'compatibility-tradefed',
+            'vts-core-tradefed-harness',
+        })))
 
     @staticmethod
     def create_deviceless_test_target(name: str, package_name: str,
@@ -577,6 +581,7 @@ class TestTarget(Target):
                 'name': name,
                 'test': ModuleRef.for_info(info),
                 'module_name': info["module_name"],
+                'tags': info.get(constants.MODULE_TEST_OPTIONS_TAGS, []),
             },
             TestTarget.DEVICELESS_TEST_PREREQUISITES,
         )
@@ -596,6 +601,7 @@ class TestTarget(Target):
                 'tradefed_deps': list(map(
                     ModuleRef.for_name,
                     info.get(constants.MODULE_HOST_DEPS, []))),
+                'tags': info.get(constants.MODULE_TEST_OPTIONS_TAGS, []),
             },
             TestTarget.DEVICE_TEST_PREREQUISITES,
         )
@@ -652,6 +658,9 @@ class TestTarget(Target):
 
             build_file_writer.write_string_list_attribute(
                 'suites', sorted(self._attributes.get('suites', [])))
+
+            build_file_writer.write_string_list_attribute(
+                'tags', sorted(self._attributes.get('tags', [])))
 
         writer.write_line(')')
 
