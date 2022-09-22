@@ -26,12 +26,14 @@ load(
     "atest_tradefed_label",
     "atest_tradefed_sh_label",
     "bazel_result_reporter_label",
+    "compatibility_tradefed_label",
     "tradefed_label",
     "tradefed_test_framework_label",
-    "compatibility_tradefed_label",
+    "vts_core_tradefed_harness_label",
 )
 
-_BAZEL_WORK_DIR = "${TEST_SRCDIR}/${TEST_WORKSPACE}/"
+_TEST_SRCDIR = "${TEST_SRCDIR}"
+_BAZEL_WORK_DIR = "%s/${TEST_WORKSPACE}/" % _TEST_SRCDIR
 _PY_TOOLCHAIN = "@bazel_tools//tools/python:toolchain_type"
 _TOOLCHAINS = [_PY_TOOLCHAIN]
 
@@ -155,7 +157,7 @@ _tradefed_device_test = rule(
             ),
             "tradefed_deps": attr.label_list(
                 cfg = host_transition,
-                aspects = [soong_prebuilt_tradefed_test_aspect]
+                aspects = [soong_prebuilt_tradefed_test_aspect],
             ),
             "_aapt": attr.label(
                 default = aapt_label,
@@ -172,19 +174,27 @@ _tradefed_device_test = rule(
 )
 
 def tradefed_device_test(tradefed_deps = [], suites = [], **attrs):
-    non_compatibility_suites = {
-        'host-unit-tests': None,
-        'null-suite': None,
-        'device-tests': None,
-        'general-tests': None,
+    suite_to_deps = {
+        "host-unit-tests": [],
+        "null-suite": [],
+        "device-tests": [],
+        "general-tests": [],
+        "vts": [vts_core_tradefed_harness_label],
     }
-    all_tradefed_deps = []
-    all_tradefed_deps.extend(tradefed_deps)
+    all_tradefed_deps = {d: None for d in tradefed_deps}
 
-    if [s for s in suites if s not in non_compatibility_suites]:
-        all_tradefed_deps.append(compatibility_tradefed_label)
+    for s in suites:
+        all_tradefed_deps.update({
+            d: None
+            for d in suite_to_deps.get(s, [compatibility_tradefed_label])
+        })
 
-    _tradefed_device_test(tradefed_deps=all_tradefed_deps, **attrs)
+    # Since `vts-core-tradefed-harness` includes `compatibility-tradefed`, we
+    # will exclude `compatibility-tradefed` if `vts-core-tradefed-harness` exists.
+    if vts_core_tradefed_harness_label in all_tradefed_deps:
+        all_tradefed_deps.pop(compatibility_tradefed_label, default = None)
+
+    _tradefed_device_test(tradefed_deps = all_tradefed_deps.keys(), **attrs)
 
 def _tradefed_test_impl(
         ctx,
@@ -264,7 +274,7 @@ def _tradefed_test_impl(
             "{module_name}": ctx.attr.module_name,
             "{atest_tradefed_launcher}": _abspath(ctx.file._atest_tradefed_launcher),
             "{atest_helper}": _abspath(ctx.file._atest_helper),
-            "{tradefed_tests_dir}": _BAZEL_WORK_DIR + ctx.attr.test[0].label.package,
+            "{tradefed_tests_dir}": _TEST_SRCDIR,
             "{tradefed_classpath}": tradefed_classpath,
             "{shared_lib_dirs}": shared_lib_dirs,
             "{path_additions}": ":".join(path_additions),
