@@ -89,12 +89,17 @@ except ImportError as err:
         from asuite.metrics import metrics_base
         from asuite.metrics import metrics_utils
     except ImportError as err:
-        # This exception occurs only when invoking atest in source code.
-        print("You shouldn't see this message unless you ran 'atest-src'. "
-              "To resolve the issue, please run:\n\t{}\n"
-              "and try again.".format('pip3 install protobuf'))
         print('Import error: ', err)
         print('sys.path:\n', '\n'.join(sys.path))
+        # Error occurs in prebuilt atest + prebuilt executable python3.
+        if Path(constants.VERSION_FILE).is_file():
+            colorful_print("This error may occur in unexpected conditions. "
+                "Please report this bug and use 'atest-src' as alternative.",
+                constants.RED)
+        else:
+            print("You shouldn't see this message unless you ran 'atest-src'. "
+              "To resolve the issue, please run:\n\t{}\n"
+              "and try again.".format('pip3 install protobuf'))
         sys.exit(constants.IMPORT_FAILURE)
 
 _BASH_RESET_CODE = '\033[0m\n'
@@ -1584,6 +1589,35 @@ def get_verify_key(tests, extra_args):
             test_commands.append('%s=%s' % (key, str(value)))
     test_commands.sort()
     return ' '.join(test_commands)
+
+def gen_runner_cmd_to_file(tests, dry_run_cmd,
+                           result_path=constants.RUNNER_COMMAND_PATH):
+    """Generate test command and save to file.
+
+    Args:
+        tests: A String of input tests.
+        dry_run_cmd: A String of dry run command.
+        result_path: A file path for saving result.
+    Returns:
+        A composed run commands.
+    """
+    normalized_cmd = dry_run_cmd
+    root_path = os.environ.get(constants.ANDROID_BUILD_TOP)
+    if root_path in dry_run_cmd:
+        normalized_cmd = dry_run_cmd.replace(root_path,
+                                             f"${constants.ANDROID_BUILD_TOP}")
+    results = {}
+    if not os.path.isfile(result_path):
+        results[tests] = normalized_cmd
+    else:
+        with open(result_path) as json_file:
+            results = json.load(json_file)
+            if results.get(tests) != normalized_cmd:
+                results[tests] = normalized_cmd
+    with open(result_path, 'w+') as _file:
+        json.dump(results, _file, indent=0)
+    return results.get(tests, '')
+
 
 def handle_test_env_var(input_test, result_path=constants.VERIFY_ENV_PATH,
                         pre_verify=False):
