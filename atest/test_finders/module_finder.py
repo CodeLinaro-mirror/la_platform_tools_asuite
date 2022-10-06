@@ -262,11 +262,13 @@ class ModuleFinder(test_finder_base.TestFinderBase):
         for module_path in self.module_info.get_paths(module_name):
             mod_dir = module_path.replace('/', '-')
             targets.add(constants.MODULES_IN + mod_dir)
-        # (b/156457698) Force add vts_kernel_tests as build target if our test
-        # belong to REQUIRED_KERNEL_TEST_MODULES due to required_module option
-        # not working for sh_test in soong.
-        if module_name in constants.REQUIRED_KERNEL_TEST_MODULES:
-            targets.add('vts_kernel_tests')
+        # (b/156457698) Force add vts_kernel_ltp_tests as build target if our
+        # test belongs to REQUIRED_LTP_TEST_MODULES due to required_module
+        # option not working for sh_test in soong. Ditto for kselftest.
+        if module_name in constants.REQUIRED_LTP_TEST_MODULES:
+            targets.add('vts_kernel_ltp_tests')
+        if module_name in constants.REQUIRED_KSELFTEST_TEST_MODULES:
+            targets.add('vts_kernel_kselftest_tests')
         # (b/184567849) Force adding module_name as a build_target. This will
         # allow excluding MODULES-IN-* and prevent from missing build targets.
         if module_name and self.module_info.is_module(module_name):
@@ -667,12 +669,11 @@ class ModuleFinder(test_finder_base.TestFinderBase):
         if not module_info:
             return None
         find_result = None
-        # If the target module is NATIVE_TEST, search CC classes only.
-        if not self.module_info.is_native_test(module_name):
-            # Find by java class.
-            find_result = self.find_test_by_class_name(
-                class_name, module_info.test_name,
-                module_info.data.get(constants.TI_REL_CONFIG))
+        # If the target module is JAVA or Python test, search class name.
+        find_result = self.find_test_by_class_name(
+            class_name, module_info.test_name,
+            module_info.data.get(constants.TI_REL_CONFIG),
+            self.module_info.is_native_test(module_name))
         # kernel target test is also define as NATIVE_TEST in build system.
         # TODO (b/157210083) Update find_test_by_kernel_class_name method to
         # support gen_rule use case.
