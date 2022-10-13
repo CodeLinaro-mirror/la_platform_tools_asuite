@@ -70,41 +70,51 @@ import atest_decorator
 import atest_error
 import constants
 
-# This proto related module will be auto generated in build time.
+_BASH_RESET_CODE = '\033[0m\n'
+# (b/248507158) extract only pb2 files for running atest-src.
+cur_dir = Path(__file__).resolve().parent
+try:
+    subprocess.check_call(
+        'unzip -oj $(which atest-py3) "atest/proto/*py" -d {} '
+        '>/dev/null'.format(cur_dir.joinpath('proto')),
+        shell=True)
+except subprocess.CalledProcessError as e:
+    print('\033[1;31m'
+          'Unable to generate pb2 on demand; running "atest-src" will fail.'
+          f'{_BASH_RESET_CODE}')
+    print(e)
+
 # pylint: disable=no-name-in-module
 # pylint: disable=import-error
 try:
     from tools.asuite.atest.tf_proto import test_record_pb2
-except ImportError as err:
+except (ModuleNotFoundError, ImportError) as err:
+    # This proto related module will be auto generated in build time; simply
+    # pass when import error occurs.
     pass
+
 # b/147562331 only occurs when running atest in source code. We don't encourge
 # the users to manually "pip3 install protobuf", therefore when the exception
 # occurs, we don't collect data and the tab completion is for args is silence.
 try:
     from metrics import metrics
-    from metrics import metrics_base
     from metrics import metrics_utils
 except ImportError as err:
-    # TODO(b/182854938): remove this ImportError after refactor metrics dir.
-    try:
-        from asuite.metrics import metrics
-        from asuite.metrics import metrics_base
-        from asuite.metrics import metrics_utils
-    except ImportError as err:
-        print('Import error: ', err)
-        print('sys.path:\n', '\n'.join(sys.path))
-        # Error occurs in prebuilt atest + prebuilt executable python3.
-        if Path(constants.VERSION_FILE).is_file():
-            colorful_print("This error may occur in unexpected conditions. "
-                "Please report this bug and use 'atest-src' as alternative.",
-                constants.RED)
-        else:
-            print("You shouldn't see this message unless you ran 'atest-src'. "
-              "To resolve the issue, please run:\n\t{}\n"
-              "and try again.".format('pip3 install protobuf'))
-        sys.exit(constants.IMPORT_FAILURE)
-
-_BASH_RESET_CODE = '\033[0m\n'
+    print('Import error: ', err)
+    print('sys.path:\n', '\n'.join(sys.path))
+    # Error occurs in prebuilt atest + prebuilt executable python3.
+    if Path(constants.VERSION_FILE).is_file():
+        print("\033[1;31m"
+              "This error may occur in unexpected conditions. "
+              "Please report this bug and use 'atest-src' as alternative."
+              f'{_BASH_RESET_CODE}')
+    else:
+        print("\033[1;31m"
+              "You shouldn't see this message unless you ran "
+              "'atest-src'. To resolve the issue, please run:\n\t"
+              f"'pip3 install --user protobuf==3.20.0'\nand try again."
+              f'{_BASH_RESET_CODE}')
+    sys.exit(constants.IMPORT_FAILURE)
 # Arbitrary number to limit stdout for failed runs in _run_limited_output.
 # Reason for its use is that the make command itself has its own carriage
 # return output mechanism that when collected line by line causes the streaming
@@ -152,6 +162,13 @@ _ROOT_PREPARER = "com.android.tradefed.targetprep.RootTargetPreparer"
 
 _WILDCARD_FILTER_RE = re.compile(r'.*[?|*]$')
 _REGULAR_FILTER_RE = re.compile(r'.*\w$')
+
+SUGGESTIONS = {
+    # (b/198581508) Do not run "adb sync" for the users.
+    'CANNOT LINK EXECUTABLE': 'Please run "adb sync" or reflash the device(s).',
+    # (b/177626045) If Atest does not install target application properly.
+    'Runner reported an invalid method': 'Please reflash the device(s).'
+}
 
 def get_build_cmd(dump=False):
     """Compose build command with no-absolute path and flag "--make-mode".
@@ -571,44 +588,6 @@ def get_terminal_size():
     return columns, rows
 
 
-def is_external_run():
-    # TODO(b/133905312): remove this function after aidegen calling
-    #       metrics_base.get_user_type directly.
-    """Check is external run or not.
-
-    Determine the internal user by passing at least one check:
-      - whose git mail domain is from google
-      - whose hostname is from google
-    Otherwise is external user.
-
-    Returns:
-        True if this is an external run, False otherwise.
-    """
-    return metrics_base.get_user_type() == metrics_base.EXTERNAL_USER
-
-
-def print_data_collection_notice():
-    """Print the data collection notice."""
-    anonymous = ''
-    user_type = 'INTERNAL'
-    if metrics_base.get_user_type() == metrics_base.EXTERNAL_USER:
-        anonymous = ' anonymous'
-        user_type = 'EXTERNAL'
-    notice = ('  We collect%s usage statistics in accordance with our Content '
-              'Licenses (%s), Contributor License Agreement (%s), Privacy '
-              'Policy (%s) and Terms of Service (%s).'
-             ) % (anonymous,
-                  constants.CONTENT_LICENSES_URL,
-                  constants.CONTRIBUTOR_AGREEMENT_URL[user_type],
-                  constants.PRIVACY_POLICY_URL,
-                  constants.TERMS_SERVICE_URL
-                 )
-    print(delimiter('=', 18, prenl=1))
-    colorful_print("Notice:", constants.RED)
-    colorful_print("%s" % notice, constants.GREEN)
-    print(delimiter('=', 18, postnl=1))
-
-
 def handle_test_runner_cmd(input_test, test_cmds, do_verification=False,
                            result_path=constants.VERIFY_DATA_PATH):
     """Handle the runner command of input tests.
@@ -975,7 +954,7 @@ def find_files(path, file_name=constants.TEST_MAPPING):
             logging.debug(msg)
             logging.debug("Exception: %s", e)
             metrics.AtestExitEvent(
-                duration=0,
+                duration=metrics_utils.convert_duration(0),
                 exit_code=ExitCode.COLLECT_ONLY_FILE_NOT_FOUND,
                 stacktrace=msg,
                 logs=e)
@@ -1154,7 +1133,8 @@ def load_json_safely(jsonfile):
         jsonfile = jsonfile.decode('utf-8')
     if Path(jsonfile).is_file():
         try:
-            return json.load(open(jsonfile))
+            with open(jsonfile, 'r') as cache:
+                return json.load(cache)
         except json.JSONDecodeError:
             logging.debug('Exception happened while loading %s.', jsonfile)
     else:
@@ -2008,3 +1988,22 @@ def generate_print_result_html(result_file: Path):
               f'file://{result_html}\n')
     except Exception as e:
         logging.debug('Did not generate log html for reason: %s', e)
+
+# pylint: disable=broad-except
+def prompt_suggestions(result_file: Path):
+    """Generate suggestions when detecting keywords in logs."""
+    result_file = Path(result_file)
+    search_dir = Path(result_file).parent.joinpath('log')
+    logs = sorted(find_files(str(search_dir), file_name='*'))
+    for log in logs:
+        for keyword, suggestion in SUGGESTIONS.items():
+            try:
+                with open(log, 'r') as cache:
+                    content = cache.read()
+                    if keyword in content:
+                        colorful_print(
+                            '[Suggestion] ' + suggestion, color=constants.RED)
+                        break
+            # If the given is not a plain text, just ignore it.
+            except Exception:
+                pass
