@@ -100,6 +100,9 @@ class Features(enum.Enum):
         '--experimental-remote',
         'Use Bazel remote execution and caching where supported.',
         False)
+    EXPERIMENTAL_HOST_DRIVEN_TEST = (
+        '--experimental-host-driven-test',
+        'Enables running host-driven device tests in Bazel mode.', True)
 
     def __init__(self, arg_flag, description, affects_workspace):
         self.arg_flag = arg_flag
@@ -233,15 +236,16 @@ class WorkspaceGenerator:
                     self.enabled_features and
                     self.mod_info.is_device_driven_test(info)):
                 self._resolve_dependencies(
-                    self._add_test_target(
-                        info, 'device',
-                        TestTarget.create_device_test_target), seen)
+                    self._add_device_test_target(info, False), seen)
 
             if self.is_host_unit_test(info):
                 self._resolve_dependencies(
-                    self._add_test_target(
-                        info, 'host',
-                        TestTarget.create_deviceless_test_target), seen)
+                    self._add_deviceless_test_target(info), seen)
+            elif (Features.EXPERIMENTAL_HOST_DRIVEN_TEST in
+                  self.enabled_features and
+                  self.mod_info.is_host_driven_test(info)):
+                self._resolve_dependencies(
+                    self._add_device_test_target(info, True), seen)
 
     def _resolve_dependencies(
         self, top_level_target: Target, seen: Set[Target]):
@@ -274,13 +278,28 @@ class WorkspaceGenerator:
 
             stack.append(next_top)
 
-    def _add_test_target(self, info: Dict[str, Any], name_suffix: str,
-                         create_fn: Callable) -> Target:
+    def _add_device_test_target(self, info: Dict[str, Any],
+                                is_host_driven: bool) -> Target:
         package_name = self._get_module_path(info)
-        name = f'{info["module_name"]}_{name_suffix}'
+        name_suffix = 'host' if is_host_driven else 'device'
+        name = f'{info[constants.MODULE_INFO_ID]}_{name_suffix}'
 
         def create():
-            return create_fn(
+            return TestTarget.create_device_test_target(
+                name,
+                package_name,
+                info,
+                is_host_driven,
+            )
+
+        return self._add_target(package_name, name, create)
+
+    def _add_deviceless_test_target(self, info: Dict[str, Any]) -> Target:
+        package_name = self._get_module_path(info)
+        name = f'{info[constants.MODULE_INFO_ID]}_host'
+
+        def create():
+            return TestTarget.create_deviceless_test_target(
                 name,
                 package_name,
                 info,
@@ -290,7 +309,7 @@ class WorkspaceGenerator:
 
     def _add_prebuilt_target(self, info: Dict[str, Any]) -> Target:
         package_name = self._get_module_path(info)
-        name = info['module_name']
+        name = info[constants.MODULE_INFO_ID]
 
         def create():
             return SoongPrebuiltTarget.create(
@@ -513,8 +532,8 @@ class ModuleRef:
 
     def target(self) -> Target:
         if not self._target:
-            module_name = self.info['module_name']
-            raise Exception(f'Target not set for ref `{module_name}`')
+            target_name = self.info[constants.MODULE_INFO_ID]
+            raise Exception(f'Target not set for ref `{target_name}`')
 
         return self._target
 
@@ -588,10 +607,13 @@ class TestTarget(Target):
 
     @staticmethod
     def create_device_test_target(name: str, package_name: str,
-                                  info: Dict[str, Any]):
+                                  info: Dict[str, Any], is_host_driven: bool):
+        rule = ('tradefed_host_driven_device_test' if is_host_driven
+                else 'tradefed_device_driven_test')
+
         return TestTarget(
             package_name,
-            'tradefed_device_test',
+            rule,
             {
                 'name': name,
                 'test': ModuleRef.for_info(info),
@@ -718,6 +740,7 @@ class SoongPrebuiltTarget(Target):
     def create(gen: WorkspaceGenerator,
                info: Dict[str, Any],
                package_name: str=''):
+        target_name = info[constants.MODULE_INFO_ID]
         module_name = info['module_name']
 
         configs = [
@@ -753,6 +776,7 @@ class SoongPrebuiltTarget(Target):
         enabled_features = gen.enabled_features
 
         return SoongPrebuiltTarget(
+            target_name,
             module_name,
             package_name,
             config_files,
@@ -768,16 +792,17 @@ class SoongPrebuiltTarget(Target):
             ),
         )
 
-    def __init__(self, name: str, package_name: str,
+    def __init__(self, target_name: str, module_name: str, package_name: str,
                  config_files: Dict[Config, List[Path]],
                  deps: Dependencies):
-        self._name = name
+        self._target_name = target_name
+        self._module_name = module_name
         self._package_name = package_name
         self.config_files = config_files
         self.deps = deps
 
     def name(self) -> str:
-        return self._name
+        return self._target_name
 
     def package_name(self) -> str:
         return self._package_name
@@ -815,8 +840,8 @@ class SoongPrebuiltTarget(Target):
         writer.write_line(f'{self._rule_name()}(')
 
         with writer.indent():
-            writer.write_line(f'name = "{self._name}",')
-            writer.write_line(f'module_name = "{self._name}",')
+            writer.write_line(f'name = "{self._target_name}",')
+            writer.write_line(f'module_name = "{self._module_name}",')
             self._write_files_attribute(writer)
             self._write_deps_attribute(writer, 'static_deps',
                                        self.deps.static_dep_refs)
@@ -827,7 +852,7 @@ class SoongPrebuiltTarget(Target):
         writer.write_line(')')
 
     def create_filesystem_layout(self, package_dir: Path):
-        prebuilts_dir = package_dir.joinpath(self._name)
+        prebuilts_dir = package_dir.joinpath(self._target_name)
         prebuilts_dir.mkdir()
 
         for config, files in self.config_files.items():
@@ -848,13 +873,12 @@ class SoongPrebuiltTarget(Target):
         if not self.config_files:
             return
 
-        name = self._name
-
         writer.write('files = ')
         write_config_select(
             writer,
             self.config_files,
-            lambda c, _: writer.write(f'glob(["{name}/{c.name}/**/*"])'),
+            lambda c, _: writer.write(
+                f'glob(["{self._target_name}/{c.name}/**/*"])'),
         )
         writer.write_line(',')
 
@@ -1140,7 +1164,9 @@ def _decorate_find_method(mod_info, finder_method_func, host, enabled_features):
                 continue
 
             if mod_info.is_suite_in_compatibility_suites(
-                'host-unit-tests', m_info):
+                'host-unit-tests', m_info) or (
+                    Features.EXPERIMENTAL_HOST_DRIVEN_TEST in enabled_features
+                    and mod_info.is_host_driven_test(m_info)):
                 tinfo.test_runner = BazelTestRunner.NAME
         return test_infos
     return use_bazel_runner
@@ -1390,6 +1416,10 @@ class BazelTestRunner(trb.TestRunnerBase):
                 extra_args,
                 self._get_remote_args))
 
+        # Default to --test_output=errors unless specified otherwise
+        if not any(arg.startswith('--test_output=') for arg in bazel_args):
+            bazel_args.append('--test_output=errors')
+
         # This is an alternative to shlex.join that doesn't exist in Python
         # versions < 3.8.
         bazel_args_str = ' '.join(shlex.quote(arg) for arg in bazel_args)
@@ -1408,6 +1438,10 @@ class BazelTestRunner(trb.TestRunnerBase):
         # Make a copy of the `extra_args` dict to avoid modifying it for other
         # Atest runners.
         extra_args_copy = extra_args.copy()
+
+        # Remove the `--host` flag since we already pass that in the rule's
+        # implementation.
+        extra_args_copy.pop(constants.HOST, None)
 
         # Map args to their native Bazel counterparts.
         for arg in _SUPPORTED_BAZEL_ARGS:

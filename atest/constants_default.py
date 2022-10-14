@@ -112,6 +112,7 @@ MODULE_LIBS = 'libs'
 MODULE_STATIC_LIBS = 'static_libs'
 MODULE_HOST_DEPS = 'host_dependencies'
 MODULE_TEST_OPTIONS_TAGS = 'test_options_tags'
+MODULE_INFO_ID = 'module_info_id'
 
 
 # Env constants
@@ -195,13 +196,6 @@ EXTERNAL = 'EXTERNAL_RUN'
 INTERNAL = 'INTERNAL_RUN'
 INTERNAL_EMAIL = '@google.com'
 INTERNAL_HOSTNAME = ['.google.com', 'c.googlers.com']
-CONTENT_LICENSES_URL = 'https://source.android.com/setup/start/licenses'
-CONTRIBUTOR_AGREEMENT_URL = {
-    'INTERNAL': 'https://cla.developers.google.com/',
-    'EXTERNAL': 'https://opensource.google.com/docs/cla/'
-}
-PRIVACY_POLICY_URL = 'https://policies.google.com/privacy'
-TERMS_SERVICE_URL = 'https://policies.google.com/terms'
 TOOL_NAME = 'atest'
 SUB_TOOL_NAME = ''
 USER_FROM_TOOL = 'USER_FROM_TOOL'
