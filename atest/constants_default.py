@@ -336,10 +336,6 @@ UPLOAD_TEST_RESULT_MSG = 'Upload test result?'
 DISCOVERY_SERVICE = ''
 STORAGE2_TEST_URI = ''
 
-# messages that share among libraries.
-REBUILD_MODULE_INFO_MSG = ('(This can happen after a repo sync or if the test'
-                           ' is new. Running with "{}" may resolve the issue.)')
-
 # Example arguments used in ~/.atest/config
 ATEST_EXAMPLE_ARGS = ('## Specify only one option per line; any test name/path will be ignored automatically.\n'
                       '## Option that follows a "#" will be ignored.\n'
@@ -381,9 +377,6 @@ DEFAULT_EXCLUDE_NOT_PARAS = {'not_' + TF_PARA_INSTANT_APP,
                             'not_' + TF_PARA_MULTIABI}
 
 # ATest integration test related constants.
-INTEGRATION_TESTS = [os.path.join(
-    os.environ.get(ANDROID_BUILD_TOP, os.getcwd()),
-    'tools/asuite/atest/test_plans/INTEGRATION_TESTS')]
 VERIFY_DATA_PATH = os.path.join(
     os.environ.get(ANDROID_BUILD_TOP, os.getcwd()),
     'tools/asuite/atest/test_data/test_commands.json')
