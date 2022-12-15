@@ -403,6 +403,19 @@ class ModuleInfoUnittests(unittest.TestCase):
 
     @mock.patch.dict('os.environ', {constants.ANDROID_BUILD_TOP:'/',
                                     constants.ANDROID_PRODUCT_OUT:PRODUCT_OUT_DIR})
+    def test_merge_build_system_infos_missing_keys(self):
+        """Test _merge_build_system_infos for keys missing from module-info.json."""
+        mod_info = module_info.ModuleInfo(module_file=JSON_FILE_PATH, index_dir=HOST_OUT_DIR)
+        name_to_mod_info = mod_info._merge_build_system_infos(
+            {}, java_bp_info_path=self.java_dep_path)
+
+        expect_deps = ['test_dep_level_1_1']
+        self.assertEqual(
+            name_to_mod_info['not_in_module_info'].get(constants.MODULE_DEPENDENCIES),
+            expect_deps)
+
+    @mock.patch.dict('os.environ', {constants.ANDROID_BUILD_TOP:'/',
+                                    constants.ANDROID_PRODUCT_OUT:PRODUCT_OUT_DIR})
     def test_merge_dependency_with_ori_dependency(self):
         """Test _merge_dependency."""
         mod_info = module_info.ModuleInfo(module_file=JSON_FILE_PATH, index_dir=HOST_OUT_DIR)
@@ -600,9 +613,9 @@ class ModuleInfoUnittests(unittest.TestCase):
     def test_has_mainline_modules(self):
         """Test has_mainline_modules."""
         name1 = 'MainModule1'
-        mainline_module1 = 'foo2.apk+foo3.apk'
+        mainline_module1 = ['foo2.apk', 'foo3.apk']
         name2 = 'MainModule2'
-        mainline_module2 = 'foo1.apex'
+        mainline_module2 = ['foo1.apex']
         name3 = 'MainModule3'
 
         mod_info = module_info.ModuleInfo(module_file=JSON_FILE_PATH, index_dir=HOST_OUT_DIR)
@@ -694,6 +707,15 @@ class ModuleInfoUnittests(unittest.TestCase):
 
         self.assertEqual({'module_1', 'module_2'},
                          mod_info.get_modules_by_path_in_srcs('path/src2'))
+
+    def test_contains_same_mainline_modules(self):
+        mainline_modules = {'A.apex', 'B.apk'}
+        self.assertTrue(module_info.contains_same_mainline_modules(
+            mainline_modules,
+            {'B.apk+A.apex'}))
+        self.assertFalse(module_info.contains_same_mainline_modules(
+            mainline_modules,
+            {'B.apk+C.apex'}))
 
 @mock.patch.dict('os.environ', {constants.ANDROID_BUILD_TOP: '/'})
 def create_empty_module_info():
