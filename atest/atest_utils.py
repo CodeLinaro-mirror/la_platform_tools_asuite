@@ -22,6 +22,7 @@ Utility functions for atest.
 
 from __future__ import print_function
 
+import datetime
 import fnmatch
 import hashlib
 import importlib
@@ -35,72 +36,25 @@ import re
 import shutil
 import subprocess
 import sys
-import sysconfig
 import time
 import zipfile
 
 from multiprocessing import Process
 from pathlib import Path
+from typing import Any, Dict
 
 import xml.etree.ElementTree as ET
 
-from atest_enum import DetectType, ExitCode, FilterType
+from atest.atest_enum import DetectType, ExitCode, FilterType
 
-# This is a workaround of b/144743252, where the http.client failed to loaded
-# because the googleapiclient was found before the built-in libs; enabling
-# embedded launcher(b/135639220) has not been reliable and other issue will
-# raise.
-# The workaround is repositioning the built-in libs before other 3rd libs in
-# PYTHONPATH(sys.path) to eliminate the symptom of failed loading http.client.
-for lib in (sysconfig.get_paths()['stdlib'], sysconfig.get_paths()['purelib']):
-    if lib in sys.path:
-        sys.path.remove(lib)
-    sys.path.insert(0, lib)
-# (b/219847353) Move googleapiclient to the last position of sys.path when
-#  existed.
-for lib in sys.path:
-    if 'googleapiclient' in lib:
-        sys.path.remove(lib)
-        sys.path.append(lib)
-        break
 #pylint: disable=wrong-import-position
-import atest_decorator
-import atest_error
-import constants
+from atest import atest_decorator
+from atest import atest_error
+from atest import constants
 
-# This proto related module will be auto generated in build time.
-# pylint: disable=no-name-in-module
-# pylint: disable=import-error
-try:
-    from tools.asuite.atest.tf_proto import test_record_pb2
-except ImportError as err:
-    pass
-# b/147562331 only occurs when running atest in source code. We don't encourge
-# the users to manually "pip3 install protobuf", therefore when the exception
-# occurs, we don't collect data and the tab completion is for args is silence.
-try:
-    from metrics import metrics
-    from metrics import metrics_base
-    from metrics import metrics_utils
-except ImportError as err:
-    # TODO(b/182854938): remove this ImportError after refactor metrics dir.
-    try:
-        from asuite.metrics import metrics
-        from asuite.metrics import metrics_base
-        from asuite.metrics import metrics_utils
-    except ImportError as err:
-        print('Import error: ', err)
-        print('sys.path:\n', '\n'.join(sys.path))
-        # Error occurs in prebuilt atest + prebuilt executable python3.
-        if Path(constants.VERSION_FILE).is_file():
-            colorful_print("This error may occur in unexpected conditions. "
-                "Please report this bug and use 'atest-src' as alternative.",
-                constants.RED)
-        else:
-            print("You shouldn't see this message unless you ran 'atest-src'. "
-              "To resolve the issue, please run:\n\t{}\n"
-              "and try again.".format('pip3 install protobuf'))
-        sys.exit(constants.IMPORT_FAILURE)
+from atest.metrics import metrics
+from atest.metrics import metrics_utils
+from atest.tf_proto import test_record_pb2
 
 _BASH_RESET_CODE = '\033[0m\n'
 # Arbitrary number to limit stdout for failed runs in _run_limited_output.
@@ -150,6 +104,13 @@ _ROOT_PREPARER = "com.android.tradefed.targetprep.RootTargetPreparer"
 
 _WILDCARD_FILTER_RE = re.compile(r'.*[?|*]$')
 _REGULAR_FILTER_RE = re.compile(r'.*\w$')
+
+SUGGESTIONS = {
+    # (b/198581508) Do not run "adb sync" for the users.
+    'CANNOT LINK EXECUTABLE': 'Please run "adb sync" or reflash the device(s).',
+    # (b/177626045) If Atest does not install target application properly.
+    'Runner reported an invalid method': 'Please reflash the device(s).'
+}
 
 def get_build_cmd(dump=False):
     """Compose build command with no-absolute path and flag "--make-mode".
@@ -334,7 +295,8 @@ def get_mainline_build_cmd(build_targets):
         'dist',
         'apps_only',
         'merge_zips',
-        'aapt2'
+        'aapt2',
+        'aapt' # To avoid 'apk installed but AaptParser failed' error.
     ]
     cmd = get_build_cmd()
     cmd.append(target_build_apps)
@@ -411,9 +373,6 @@ def run_build_cmd(cmd, verbose=False, env_vars=None):
         return True
     except subprocess.CalledProcessError as err:
         logging.error('Build failure when running: %s', ' '.join(cmd))
-        print(constants.REBUILD_MODULE_INFO_MSG.format(
-        colorize(constants.REBUILD_MODULE_INFO_FLAG,
-                 constants.RED)))
         if err.output:
             logging.error(err.output)
         return False
@@ -504,14 +463,14 @@ def _has_colors(stream):
     return cached_has_colors[stream]
 
 
-def colorize(text, color, highlight=None):
+def colorize(text, color, bp_color=None):
     """ Convert to colorful string with ANSI escape code.
 
     Args:
         text: A string to print.
-        color: ANSI code shift for colorful print. They are defined
-               in constants_default.py.
-        highlight: Backgroud color which is an ANSI code shift for colorful
+        color: Forground(Text) color which is an ANSI code shift for colorful
+               print. They are defined in constants_default.py.
+        bp_color: Backgroud color which is an ANSI code shift for colorful
                    print.
 
     Returns:
@@ -522,11 +481,11 @@ def colorize(text, color, highlight=None):
     has_colors = _has_colors(sys.stdout)
     if has_colors:
         background_color = ''
-        if highlight:
+        if bp_color:
             # Foreground(Text) ranges from 30-37
             text_color = 30 + color
             # Background ranges from 40-47
-            background_color = ';%d' % (40 + highlight)
+            background_color = ';%d' % (40 + bp_color)
         else:
             text_color = 30 + color
         clr_str = "%s%d%sm%s%s" % (clr_pref, text_color, background_color,
@@ -536,18 +495,18 @@ def colorize(text, color, highlight=None):
     return clr_str
 
 
-def colorful_print(text, color, highlight=None, auto_wrap=True):
+def colorful_print(text, color, bp_color=None, auto_wrap=True):
     """Print out the text with color.
 
     Args:
         text: A string to print.
-        color: ANSI code shift for colorful print. They are defined
-               in constants_default.py.
-        highlight: Backgroud color which is an ANSI code shift for colorful
+        color: Forground(Text) color which is an ANSI code shift for colorful
+               print. They are defined in constants_default.py.
+        bp_color: Backgroud color which is an ANSI code shift for colorful
                    print.
         auto_wrap: If True, Text wraps while print.
     """
-    output = colorize(text, color, highlight)
+    output = colorize(text, color, bp_color)
     if auto_wrap:
         print(output)
     else:
@@ -566,44 +525,6 @@ def get_terminal_size():
         fallback=(_DEFAULT_TERMINAL_WIDTH,
                   _DEFAULT_TERMINAL_HEIGHT))
     return columns, rows
-
-
-def is_external_run():
-    # TODO(b/133905312): remove this function after aidegen calling
-    #       metrics_base.get_user_type directly.
-    """Check is external run or not.
-
-    Determine the internal user by passing at least one check:
-      - whose git mail domain is from google
-      - whose hostname is from google
-    Otherwise is external user.
-
-    Returns:
-        True if this is an external run, False otherwise.
-    """
-    return metrics_base.get_user_type() == metrics_base.EXTERNAL_USER
-
-
-def print_data_collection_notice():
-    """Print the data collection notice."""
-    anonymous = ''
-    user_type = 'INTERNAL'
-    if metrics_base.get_user_type() == metrics_base.EXTERNAL_USER:
-        anonymous = ' anonymous'
-        user_type = 'EXTERNAL'
-    notice = ('  We collect%s usage statistics in accordance with our Content '
-              'Licenses (%s), Contributor License Agreement (%s), Privacy '
-              'Policy (%s) and Terms of Service (%s).'
-             ) % (anonymous,
-                  constants.CONTENT_LICENSES_URL,
-                  constants.CONTRIBUTOR_AGREEMENT_URL[user_type],
-                  constants.PRIVACY_POLICY_URL,
-                  constants.TERMS_SERVICE_URL
-                 )
-    print(delimiter('=', 18, prenl=1))
-    colorful_print("Notice:", constants.RED)
-    colorful_print("%s" % notice, constants.GREEN)
-    print(delimiter('=', 18, postnl=1))
 
 
 def handle_test_runner_cmd(input_test, test_cmds, do_verification=False,
@@ -868,7 +789,8 @@ def load_test_info_cache(test_reference, cache_root=None):
                 ValueError,
                 TypeError,
                 EOFError,
-                IOError) as err:
+                IOError,
+                ImportError) as err:
             # Won't break anything, just remove the old cache, log this error,
             # and collect the exception by metrics.
             logging.debug('Exception raised: %s', err)
@@ -972,7 +894,7 @@ def find_files(path, file_name=constants.TEST_MAPPING):
             logging.debug(msg)
             logging.debug("Exception: %s", e)
             metrics.AtestExitEvent(
-                duration=0,
+                duration=metrics_utils.convert_duration(0),
                 exit_code=ExitCode.COLLECT_ONLY_FILE_NOT_FOUND,
                 stacktrace=msg,
                 logs=e)
@@ -1151,7 +1073,8 @@ def load_json_safely(jsonfile):
         jsonfile = jsonfile.decode('utf-8')
     if Path(jsonfile).is_file():
         try:
-            return json.load(open(jsonfile))
+            with open(jsonfile, 'r') as cache:
+                return json.load(cache)
         except json.JSONDecodeError:
             logging.debug('Exception happened while loading %s.', jsonfile)
     else:
@@ -1880,3 +1803,147 @@ def has_index_files():
         constants.CC_CLASS_INDEX,
         constants.QCLASS_INDEX,
         constants.PACKAGE_INDEX])
+
+# pylint: disable=anomalous-backslash-in-string,too-many-branches
+def get_bp_content(filename: Path, module_type: str) -> Dict:
+    """Get essential content info from an Android.bp.
+    By specifying module_type (e.g. 'android_test', 'android_app'), this method
+    can parse the given starting point and grab 'name', 'instrumentation_for'
+    and 'manifest'.
+
+    Returns:
+        A dict of mapping test module and target module; e.g.
+        {
+         'FooUnitTests':
+             {'manifest': 'AndroidManifest.xml', 'target_module': 'Foo'},
+         'Foo':
+             {'manifest': 'AndroidManifest-common.xml', 'target_module': ''}
+        }
+        Null dict if there is no content of the given module_type.
+    """
+    build_file = Path(filename)
+    if not any((build_file.suffix == '.bp', build_file.is_file())):
+        return {}
+    start_from = re.compile(f'^{module_type}\s*\{{')
+    end_with = re.compile(r'^\}$')
+    context_re = re.compile(
+        r'\s*(?P<key>(name|manifest|instrumentation_for))\s*:'
+        r'\s*\"(?P<value>.*)\"\s*,', re.M)
+    with open(build_file, 'r') as cache:
+        data = cache.readlines()
+    content_dict = {}
+    start_recording = False
+    for _line in data:
+        line = _line.strip()
+        if re.match(start_from, line):
+            start_recording = True
+            _dict = {}
+            continue
+        if start_recording:
+            if not re.match(end_with, line):
+                match = re.match(context_re, line)
+                if match:
+                    _dict.update(
+                        {match.group('key'): match.group('value')})
+            else:
+                start_recording = False
+                module_name = _dict.get('name')
+                if module_name:
+                    content_dict.update(
+                        {module_name: {
+                            'manifest': _dict.get(
+                                'manifest', 'AndroidManifest.xml'),
+                            'target_module': _dict.get(
+                                'instrumentation_for', '')}
+                        })
+    return content_dict
+
+def get_manifest_info(manifest: Path) -> Dict[str, Any]:
+    """Get the essential info from the given manifest file.
+    This method cares only three attributes:
+        * package
+        * targetPackage
+        * persistent
+    For an instrumentation test, the result will be like:
+    {
+        'package': 'com.android.foo.tests.unit',
+        'targetPackage': 'com.android.foo',
+        'persistent': False
+    }
+    For a target module of the instrumentation test:
+    {
+        'package': 'com.android.foo',
+        'targetPackage': '',
+        'persistent': True
+    }
+    """
+    mdict = {'package': '', 'target_package': '', 'persistent': False}
+    try:
+        xml_root = ET.parse(manifest).getroot()
+    except (ET.ParseError, FileNotFoundError):
+        return mdict
+    manifest_package_re =  re.compile(r'[a-z][\w]+(\.[\w]+)*')
+    # 1. Must probe 'package' name from the top.
+    for item in xml_root.findall('.'):
+        if 'package' in item.attrib.keys():
+            pkg = item.attrib.get('package')
+            match = manifest_package_re.match(pkg)
+            if match:
+                mdict['package'] = pkg
+                break
+    for item in xml_root.findall('*'):
+        # 2. Probe 'targetPackage' in 'instrumentation' tag.
+        if item.tag == 'instrumentation':
+            for key, value in item.attrib.items():
+                if 'targetPackage' in key:
+                    mdict['target_package'] = value
+                    break
+        # 3. Probe 'persistent' in any tags.
+        for key, value in item.attrib.items():
+            if 'persistent' in key:
+                mdict['persistent'] = value.lower() == 'true'
+                break
+    return mdict
+
+# pylint: disable=broad-except
+def generate_print_result_html(result_file: Path):
+    """Generate a html that collects all log files."""
+    result_file = Path(result_file)
+    search_dir = Path(result_file).parent.joinpath('log')
+    result_html = Path(search_dir, 'test_logs.html')
+    try:
+        logs = sorted(find_files(str(search_dir), file_name='*'))
+        with open(result_html, 'w') as cache:
+            cache.write('<!DOCTYPE html><html><body>')
+            result = load_json_safely(result_file)
+            if result:
+                cache.write(f'<h1>{"atest " + result.get("args")}</h1>')
+                timestamp = datetime.datetime.fromtimestamp(
+                    result_file.stat().st_ctime)
+                cache.write(f'<h2>{timestamp}</h2>')
+            for log in logs:
+                cache.write(f'<p><a href="{log}">{Path(log).name}</a></p>')
+            cache.write('</body></html>')
+        print(f'\nTo access logs, press "ctrl" and click on\n'
+              f'file://{result_html}\n')
+    except Exception as e:
+        logging.debug('Did not generate log html for reason: %s', e)
+
+# pylint: disable=broad-except
+def prompt_suggestions(result_file: Path):
+    """Generate suggestions when detecting keywords in logs."""
+    result_file = Path(result_file)
+    search_dir = Path(result_file).parent.joinpath('log')
+    logs = sorted(find_files(str(search_dir), file_name='*'))
+    for log in logs:
+        for keyword, suggestion in SUGGESTIONS.items():
+            try:
+                with open(log, 'r') as cache:
+                    content = cache.read()
+                    if keyword in content:
+                        colorful_print(
+                            '[Suggestion] ' + suggestion, color=constants.RED)
+                        break
+            # If the given is not a plain text, just ignore it.
+            except Exception:
+                pass

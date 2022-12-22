@@ -25,12 +25,12 @@ import unittest
 
 from unittest import mock
 
-import atest_utils as au
-import unittest_constants as uc
-import constants
+from atest import atest_utils as au
+from atest import unittest_constants as uc
+from atest import constants
 
-from atest_enum import ExitCode
-from tools import atest_tools
+from atest.atest_enum import ExitCode
+from atest.tools import atest_tools
 
 SEARCH_ROOT = uc.TEST_DATA_DIR
 PRUNEPATH = uc.TEST_CONFIG_DATA_DIR
@@ -40,10 +40,10 @@ UPDATEDB = atest_tools.UPDATEDB
 class AtestToolsUnittests(unittest.TestCase):
     """"Unittest Class for atest_tools.py."""
 
-    @mock.patch('constants.INDEX_DIR', uc.INDEX_DIR)
-    @mock.patch('constants.LOCATE_CACHE_MD5', uc.LOCATE_CACHE_MD5)
-    @mock.patch('constants.LOCATE_CACHE', uc.LOCATE_CACHE)
-    @mock.patch('tools.atest_tools.SEARCH_TOP', uc.TEST_DATA_DIR)
+    @mock.patch('atest.constants.INDEX_DIR', uc.INDEX_DIR)
+    @mock.patch('atest.constants.LOCATE_CACHE_MD5', uc.LOCATE_CACHE_MD5)
+    @mock.patch('atest.constants.LOCATE_CACHE', uc.LOCATE_CACHE)
+    @mock.patch('atest.tools.atest_tools.SEARCH_TOP', uc.TEST_DATA_DIR)
     def test_index_targets(self):
         """Test method index_targets."""
         if atest_tools.has_command(UPDATEDB) and atest_tools.has_command(LOCATE):
@@ -91,27 +91,12 @@ class AtestToolsUnittests(unittest.TestCase):
             with open(uc.CC_CLASS_INDEX, 'rb') as cache:
                 _cache = pickle.load(cache)
             self.assertIsNotNone(_cache.get('HelloWorldTest'))
-            # 4. Test get_manifest_result is functional.
-            _cache = {}
-            mproc = au.run_multi_proc(
-                    func=atest_tools.get_manifest_result, args=[uc.LOCATE_CACHE],
-                    kwargs={'manifest_index':uc.MANIFEST_INDEX}
-            )
-            mproc.join()
-            with open(uc.MANIFEST_INDEX, 'rb') as cache:
-                _cache = pickle.load(cache)
-            self.assertEqual(_cache.get('com.android.settings.tests.unit'),
-                {os.path.join(uc.TEST_DATA_DIR, 'foo/bar/AmSlam/test/AndroidManifest.xml')})
-            self.assertEqual(_cache.get('c0m.andr0id.settingS'),
-                {os.path.join(uc.TEST_DATA_DIR, 'foo/bar/AmSlam/AndroidManifest.xml')})
-            self.assertEqual(_cache.get('package.does.not.exist'), None)
-            # 5. Clean up.
+            # 4. Clean up.
             targets_to_delete = (uc.CC_CLASS_INDEX,
                                  uc.CLASS_INDEX,
                                  uc.LOCATE_CACHE,
                                  uc.PACKAGE_INDEX,
-                                 uc.QCLASS_INDEX,
-                                 uc.MANIFEST_INDEX)
+                                 uc.QCLASS_INDEX)
             for idx in targets_to_delete:
                 os.remove(idx)
         else:

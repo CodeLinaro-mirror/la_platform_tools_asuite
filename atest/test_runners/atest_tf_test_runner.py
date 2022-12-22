@@ -31,20 +31,20 @@ from functools import partial
 from pathlib import Path
 from typing import Any, List, Tuple
 
-import atest_configs
-import atest_error
-import atest_utils
-import constants
-import module_info
-import result_reporter
+from atest import atest_configs
+from atest import atest_error
+from atest import atest_utils
+from atest import constants
+from atest import module_info
+from atest import result_reporter
 
-from atest_enum import DetectType, ExitCode
-from logstorage import atest_gcp_utils
-from logstorage import logstorage_utils
-from metrics import metrics
-from test_finders import test_finder_utils
-from test_finders import test_info
-from test_runners import test_runner_base as trb
+from atest.atest_enum import DetectType, ExitCode
+from atest.logstorage import atest_gcp_utils
+from atest.logstorage import logstorage_utils
+from atest.metrics import metrics
+from atest.test_finders import test_finder_utils
+from atest.test_finders import test_info
+from atest.test_runners import test_runner_base as trb
 from .event_handler import EventHandler
 
 POLL_FREQ_SECS = 10
@@ -344,8 +344,8 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
                     inputs.pop().close()
                     if not reporter.all_test_results:
                         atest_utils.colorful_print(
-                            r'No test to run. Please check: '
-                            r'{} for detail.'.format(reporter.log_path),
+                            r'No test to run. Test Logs have saved in '
+                            f'{reporter.log_path}.',
                             constants.RED, constants.WHITE)
                     if not data_map:
                         metrics.LocalDetectEvent(
@@ -578,6 +578,12 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
             test_args.append('--template:map preparers=%s'
                              % constants.DEVICE_SETUP_PREPARER)
         for info in test_infos:
+            # Only change tradefed cmd when running local tests.
+            if hasattr(info, 'artifacts') and self.root_dir:
+                for artifact in info.artifacts:
+                    test_args.append(
+                        f'{constants.TF_MODULE_ARG} '
+                        f'{info.test_name}:test-file-name:{artifact}')
             if constants.TEST_WITH_MAINLINE_MODULES_RE.match(info.test_name):
                 test_args.append(constants.TF_ENABLE_MAINLINE_PARAMETERIZED_MODULES)
                 break
@@ -1085,7 +1091,8 @@ def extra_args_to_tf_args(mod_info: module_info.ModuleInfo,
                    constants.DRY_RUN,
                    constants.VERIFY_ENV_VARIABLE,
                    constants.FLAKES_INFO,
-                   constants.LD_LIBRARY_PATH):
+                   constants.LD_LIBRARY_PATH,
+                   constants.DEVICE_ONLY):
             continue
         unsupported_args.append(arg)
     return supported_args, unsupported_args

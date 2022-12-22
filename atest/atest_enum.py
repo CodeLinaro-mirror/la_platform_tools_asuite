@@ -21,7 +21,7 @@ from enum import IntEnum, unique, Enum
 @unique
 class DetectType(IntEnum):
     """An Enum class for local_detect_event."""
-    # Detect type for local_detect_event; next expansion: 26
+    # Detect type for local_detect_event; next expansion: 29
     BUG_DETECTED = 0
     ACLOUD_CREATE = 1
     FIND_BUILD = 2
@@ -54,6 +54,9 @@ class DetectType(IntEnum):
     MODULE_LOAD_MS = 23
     MODULE_INFO_INIT_MS = 24
     INIT_AND_FIND_MS = 25
+    FOUND_INSTRUMENTATION_TEST = 26
+    FOUND_TARGET_ARTIFACTS = 27
+    FIND_TEST_IN_DEPS=28
 
 @unique
 class ExitCode(IntEnum):

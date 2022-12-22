@@ -29,18 +29,18 @@ import time
 
 from typing import List
 
-import atest_error
-import atest_utils
-import bazel_mode
-import constants
-import test_finder_handler
-import test_mapping
+from atest import atest_error
+from atest import atest_utils
+from atest import bazel_mode
+from atest import constants
+from atest import test_finder_handler
+from atest import test_mapping
 
-from atest_enum import DetectType, ExitCode
-from metrics import metrics
-from metrics import metrics_utils
-from test_finders import module_finder
-from test_finders import test_finder_utils
+from atest.atest_enum import DetectType, ExitCode
+from atest.metrics import metrics
+from atest.metrics import metrics_utils
+from atest.test_finders import module_finder
+from atest.test_finders import test_finder_utils
 
 FUZZY_FINDER = 'FUZZY'
 CACHE_FINDER = 'CACHE'
@@ -256,13 +256,6 @@ class CLITranslator:
         if find_test_err_msg:
             print('%s\n' % (atest_utils.colorize(
                 find_test_err_msg, constants.MAGENTA)))
-        else:
-            # TODO: remove "self.mod_info is None" after refactoring module_info
-            if self.mod_info is None or not self.mod_info.force_build:
-                print(constants.REBUILD_MODULE_INFO_MSG.format(
-                    atest_utils.colorize(constants.REBUILD_MODULE_INFO_FLAG,
-                                         constants.RED)))
-            print('')
         return None
 
     def _get_test_infos(self, tests, test_mapping_test_details=None):
