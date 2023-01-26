@@ -616,7 +616,6 @@ class ModuleFinderUnittests(unittest.TestCase):
         unittest_utils.assert_equal_testinfos(
             self, uc.CC_PATH_INFO, t_infos[0])
 
-    @mock.patch('atest.constants.MODULE_INDEX', uc.MODULE_INDEX)
     @mock.patch.object(module_finder.ModuleFinder, '_get_build_targets')
     @mock.patch.object(module_finder.ModuleFinder, '_get_test_info_filter')
     @mock.patch.object(test_finder_utils, 'find_parent_module_dir',
@@ -646,7 +645,7 @@ class ModuleFinderUnittests(unittest.TestCase):
         _mock_exists.return_value = True
         test1_filter = test_info.TestFilter('test1Filter', frozenset())
         _mock_test_filter.return_value = test1_filter
-        _build_targets.return_value = ['test1_target']
+        _build_targets.return_value = {'test1_target'}
 
         t_infos = self.mod_finder.find_test_by_path('path/src1')
 
@@ -655,7 +654,7 @@ class ModuleFinderUnittests(unittest.TestCase):
             test_info.TestInfo(
                 'test1',
                 atf_tr.AtestTradefedTestRunner.NAME,
-                ['test1_target'],
+                {'test1_target'},
                 {constants.TI_FILTER: test1_filter,
                  constants.TI_REL_CONFIG: 'AndroidTest.xml'},
                 module_class=['class']),
@@ -1108,7 +1107,7 @@ class ModuleFinderUnittests(unittest.TestCase):
         self.mod_finder.module_info.get_instrumentation_target_apps.return_value = {}
         self.mod_finder.module_info.get_module_info.return_value = mod_info
         processed_info = self.mod_finder._process_test_info(
-            copy.copy(uc.MODULE_INFO))
+            copy.deepcopy(uc.MODULE_INFO))
         unittest_utils.assert_equal_testinfos(
             self,
             processed_info,
@@ -1302,7 +1301,8 @@ class ModuleFinderUnittests(unittest.TestCase):
             None)
 
 
-@mock.patch.dict('os.environ', {constants.ANDROID_BUILD_TOP: '/'})
+@mock.patch.dict('os.environ', {constants.ANDROID_BUILD_TOP: '/',
+                                constants.ANDROID_HOST_OUT: '/tmp'})
 def create_empty_module_info():
     with fake_filesystem_unittest.Patcher() as patcher:
         # pylint: disable=protected-access
