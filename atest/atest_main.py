@@ -712,9 +712,7 @@ def _non_action_validator(args):
                 constants.ANDROID_BUILD_TOP), constants.RED)
         sys.exit(ExitCode.OUTSIDE_ROOT)
     if args.version:
-        if os.path.isfile(constants.VERSION_FILE):
-            with open(constants.VERSION_FILE, encoding='utf8') as version_file:
-                print(version_file.read())
+        print(atest_utils.get_atest_version())
         sys.exit(ExitCode.SUCCESS)
     if args.help:
         atest_arg_parser.print_epilog_text()
@@ -988,7 +986,9 @@ def main(argv, results_dir, args):
     _configure_logging(args.verbose)
     _validate_args(args)
     metrics_utils.get_start_time()
-    os_pyver = '{}:{}'.format(platform.platform(), platform.python_version())
+    os_pyver = (f'{platform.platform()}:{platform.python_version()}/'
+                f'{atest_utils.get_manifest_branch(True)}:'
+                f'{atest_utils.get_atest_version()}')
     metrics.AtestStartEvent(
         command_line=' '.join(argv),
         test_references=args.tests,
@@ -1018,8 +1018,9 @@ def main(argv, results_dir, args):
         func=atest_utils.generate_buildfiles_checksum,
         args=[mod_info.module_index.parent])
 
-    # Run Test Mapping by no-bazel-mode.
-    if atest_utils.is_test_mapping(args):
+    # Run Test Mapping or coverage by no-bazel-mode.
+    if atest_utils.is_test_mapping(args) or args.coverage:
+        atest_utils.colorful_print('Not running using bazel-mode.', constants.YELLOW)
         args.bazel_mode = False
     if args.bazel_mode:
         start = time.time()
@@ -1123,6 +1124,9 @@ def main(argv, results_dir, args):
     # args.steps will be None if none of -bit set, else list of params set.
     steps = args.steps if args.steps else constants.ALL_STEPS
     if build_targets and constants.BUILD_STEP in steps:
+        if args.coverage:
+            build_targets.add('jacoco_to_lcov_converter')
+
         # Add module-info.json target to the list of build targets to keep the
         # file up to date.
         build_targets.add(mod_info.module_info_target)
@@ -1196,6 +1200,8 @@ def main(argv, results_dir, args):
         else:
             tests_exit_code = _run_test_mapping_tests(
                 results_dir, test_infos, extra_args, mod_info)
+        if args.coverage:
+            coverage.generate_coverage_report(results_dir, test_infos, mod_info)
     if args.detect_regression:
         regression_args = _get_regression_detection_args(args, results_dir)
         # TODO(b/110485713): Should not call run_tests here.
