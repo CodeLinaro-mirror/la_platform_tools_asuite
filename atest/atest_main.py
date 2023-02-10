@@ -77,10 +77,6 @@ RESULT_HEADER_FMT = '\nResults from %(test_type)s:'
 RUN_HEADER_FMT = '\nRunning %(test_count)d %(test_type)s.'
 TEST_COUNT = 'test_count'
 TEST_TYPE = 'test_type'
-# Tasks that must run in the build time but unable to build by soong.
-# (e.g subprocesses that invoke host commands.)
-ACLOUD_CREATE = at.acloud_create
-INDEX_TARGETS = at.index_targets
 END_OF_OPTION = '--'
 HAS_IGNORED_ARGS = False
 # Conditions that atest should exit without sending result to metrics.
@@ -89,25 +85,6 @@ EXIT_CODES_BEFORE_TEST = [ExitCode.ENV_NOT_SETUP,
                           ExitCode.OUTSIDE_ROOT,
                           ExitCode.AVD_CREATE_FAILURE,
                           ExitCode.AVD_INVALID_ARGS]
-
-# TODO(b/259496712): Remove this once we no longer need to set Mainline vars.
-_DEFAULT_VARS_FOR_MAINLINE = {
-    # Only support building module using static DCLA.
-    "APEX_BUILD_FOR_PRE_S_DEVICES": "true",
-
-    # Do not build compressed apex.
-    "OVERRIDE_PRODUCT_COMPRESSED_APEX": "false",
-
-    # Build sdk from source.
-    "UNBUNDLED_BUILD_SDKS_FROM_SOURCE": "true",
-
-    # The rule to create the notice file can't be generated yet,
-    # as the final output path for the apk isn't known yet.
-    # Add the path where the notice file will be generated to the
-    # aapt rules now before calling aaptBuildActions,
-    # the rule to create the notice file will be generated later.
-    "ALWAYS_EMBED_NOTICES": "true",
-}
 
 def _get_args_from_config():
     """Get customized atest arguments in the config file.
@@ -164,7 +141,7 @@ def _parse_args(argv):
         argv: A list of arguments.
 
     Returns:
-        An argspace.Namespace class instance holding parsed args.
+        An argparse.Namespace class instance holding parsed args.
     """
     # Store everything after '--' in custom_args.
     pruned_argv = argv
@@ -410,7 +387,7 @@ def _will_run_tests(args):
     regression detection.
 
     Args:
-        args: parsed args object.
+        args: An argparse.Namespace object.
 
     Returns:
         True if there are tests to run, false otherwise.
@@ -704,7 +681,7 @@ def _non_action_validator(args):
     --latest_result, etc.
 
     Args:
-        args: An argspace.Namespace class instance holding parsed args.
+        args: An argparse.Namespace object.
     """
     if not _is_inside_android_root():
         atest_utils.colorful_print(
@@ -745,7 +722,7 @@ def _dry_run_validator(args, results_dir, extra_args, test_infos, mod_info):
     """Method which process --dry-run argument.
 
     Args:
-        args: An argspace.Namespace class instance holding parsed args.
+        args: An argparse.Namespace class instance holding parsed args.
         result_dir: A string path of the results dir.
         extra_args: A dict of extra args for test runners to utilize.
         test_infos: A list of test_info.
@@ -868,46 +845,13 @@ def need_run_index_targets(args, extra_args):
         return False
     return True
 
-def acloud_create_validator(results_dir, args):
-    """Check lunch'd target before running 'acloud create'.
-
-    Args:
-        results_dir: A string of the results directory.
-        args: A list of arguments.
-
-    Returns:
-        If the target is valid:
-            A tuple of (multiprocessing.Process,
-                        string of report file path)
-        else:
-            None, None
-    """
-    if not any((args.acloud_create, args.start_avd)):
-        return None, None
-    if args.start_avd:
-        args.acloud_create = []
-    acloud_args = ' '.join(args.acloud_create)
-    target = os.getenv('TARGET_PRODUCT', "")
-    if 'cf_x86' in target:
-        report_file = at.get_report_file(results_dir, acloud_args)
-        acloud_proc = atest_utils.run_multi_proc(
-            func=ACLOUD_CREATE,
-            args=[report_file],
-            kwargs={'args':acloud_args,
-                    'no_metrics_notice':args.no_metrics})
-        return acloud_proc, report_file
-    atest_utils.colorful_print(
-        '{} is not cf_x86 family; will not create any AVD.'.format(target),
-        constants.RED)
-    return None, None
-
 def perm_consistency_metrics(test_infos, mod_info, args):
     """collect inconsistency between preparer and device root permission.
 
     Args:
         test_infos: TestInfo obj.
         mod_info: ModuleInfo obj.
-        args: An argspace.Namespace class instance holding parsed args.
+        args: An argparse.Namespace class instance holding parsed args.
     """
     try:
         # whether device has root permission
@@ -963,6 +907,23 @@ def _get_host_framework_targets(mod_info):
         logging.debug('Found exist host framework target:%s', host_targets)
     return host_targets
 
+
+def _is_auto_shard_test(test_infos):
+    """Determine whether the given tests are in shardable test list.
+
+    Args:
+        test_infos: TestInfo objects.
+
+    Returns:
+        True if test in auto shardable list.
+    """
+    shardable_tests = atest_utils.get_local_auto_shardable_tests()
+    for test_info in test_infos:
+        if test_info.test_name in shardable_tests:
+            return True
+    return False
+
+
 # pylint: disable=too-many-statements
 # pylint: disable=too-many-branches
 # pylint: disable=too-many-return-statements
@@ -972,7 +933,7 @@ def main(argv, results_dir, args):
     Args:
         argv: A list of arguments.
         results_dir: A directory which stores the ATest execution information.
-        args: An argspace.Namespace class instance holding parsed args.
+        args: An argparse.Namespace class instance holding parsed args.
 
     Returns:
         Exit code.
@@ -995,7 +956,10 @@ def main(argv, results_dir, args):
         cwd=os.getcwd(),
         os=os_pyver)
     _non_action_validator(args)
-    proc_acloud, report_file = acloud_create_validator(results_dir, args)
+
+    proc_acloud, report_file = None, None
+    if any((args.acloud_create, args.start_avd)):
+        proc_acloud, report_file = at.acloud_create_validator(results_dir, args)
     is_clean = not os.path.exists(
         os.environ.get(constants.ANDROID_PRODUCT_OUT, ''))
     extra_args = get_extra_args(args)
@@ -1003,7 +967,7 @@ def main(argv, results_dir, args):
     proc_idx = None
     # Do not index targets while the users intend to dry-run tests.
     if need_run_index_targets(args, extra_args):
-        proc_idx = atest_utils.run_multi_proc(INDEX_TARGETS)
+        proc_idx = atest_utils.run_multi_proc(at.index_targets)
     smart_rebuild = need_rebuild_module_info(
         test_steps=args.steps,
         force_rebuild=args.rebuild_module_info)
@@ -1079,15 +1043,14 @@ def main(argv, results_dir, args):
                 extra_args = get_extra_args(args)
         else:
             _validate_tm_tests_exec_mode(args, test_infos)
-
-    # Note that we update the Mainline build env vars after we potentially rebuild
-    # module info. This ends up changing build flags which re-triggers a costly
-    # build. This is not an issue when module-info is cached however.
-    # TODO(b/259496712): Remove this once we no longer need to set Mainline vars.
-    for test_info in test_infos:
-        if test_info.mainline_modules:
-            atest_utils.update_build_env(_DEFAULT_VARS_FOR_MAINLINE)
-            break
+        # Detect auto sharding and trigger creating AVDs
+        if args.auto_sharding and _is_auto_shard_test(test_infos):
+            extra_args.update({constants.SHARDING: constants.SHARD_NUM})
+            if not (any(dry_run_args) or verify_env_variables):
+                # TODO: check existing devices.
+                args.acloud_create = [f'--num-instances={constants.SHARD_NUM}']
+                proc_acloud, report_file = at.acloud_create_validator(
+                    results_dir, args)
 
     # TODO: change to another approach that put constants.CUSTOM_ARGS in the
     # end of command to make sure that customized args can override default
@@ -1152,28 +1115,12 @@ def main(argv, results_dir, args):
             result=int(build_duration))
         if not success:
             return ExitCode.BUILD_FAILURE
-
         if proc_acloud:
             proc_acloud.join()
-            status = at.probe_acloud_status(report_file)
+            status = at.probe_acloud_status(
+                report_file, find_duration + build_duration)
             if status != 0:
                 return status
-            acloud_duration = at.get_acloud_duration(report_file)
-            find_build_duration = find_duration + build_duration
-            if find_build_duration - acloud_duration >= 0:
-                # find+build took longer, saved acloud create time.
-                logging.debug('Saved acloud create time: %ss.',
-                              acloud_duration)
-                metrics.LocalDetectEvent(
-                    detect_type=DetectType.ACLOUD_CREATE,
-                    result=round(acloud_duration))
-            else:
-                # acloud create took longer, saved find+build time.
-                logging.debug('Saved Find and Build time: %ss.',
-                              find_build_duration)
-                metrics.LocalDetectEvent(
-                    detect_type=DetectType.FIND_BUILD,
-                    result=round(find_build_duration))
         # After build step 'adb' command will be available, and stop forward to
         # Tradefed if the tests require a device.
         _validate_adb_devices(args, test_infos)
