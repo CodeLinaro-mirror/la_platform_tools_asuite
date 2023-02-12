@@ -361,7 +361,8 @@ def is_test_mapping(args):
     which means the test value is a test group name in TEST_MAPPING file, e.g.,
     `:postsubmit`.
 
-    If --host-unit-test-only be applied, it's not test mapping.
+    If --host-unit-test-only or --smart-testing-local was applied, it doesn't
+    intend to be a test_mapping test.
     If any test mapping options is specified, the atest command must also be
     set to run tests in test mapping files.
 
@@ -372,12 +373,12 @@ def is_test_mapping(args):
         True if the args indicates atest shall run tests in test mapping. False
         otherwise.
     """
-    return (
-        not args.host_unit_test_only and
-        (args.test_mapping or
-        args.include_subdirs or
-        not args.tests or
-        (len(args.tests) == 1 and args.tests[0][0] == ':')))
+    if any((args.host_unit_test_only, args.smart_testing_local)):
+        return False
+    if any((args.test_mapping, args.include_subdirs, not args.tests)):
+        return True
+    # ':postsubmit' implicitly indicates running in test-mapping mode.
+    return all((len(args.tests) == 1, args.tests[0][0] == ':'))
 
 
 @atest_decorator.static_var("cached_has_colors", {})
@@ -1954,3 +1955,46 @@ def build_files_integrity_is_ok() -> bool:
             return False
     # 2. Ensure the consistency of all build files.
     return check_md5(constants.BUILDFILES_MD5, missing_ok=False)
+
+def get_local_auto_shardable_tests():
+    """Get the auto shardable test names in shardable file.
+
+    The path will be ~/.atest/auto_shard/local_auto_shardable_tests
+
+    Returns:
+        A list of auto shardable test names.
+    """
+    shardable_tests_file = Path(get_misc_dir()).joinpath(
+        '.atest/auto_shard/local_auto_shardable_tests')
+    if not shardable_tests_file.exists():
+        return []
+    return open(shardable_tests_file, 'r').read().split()
+
+def update_shardable_tests(test_name: str, run_time_in_sec: int):
+    """Update local_auto_shardable_test file.
+
+    Strategy:
+        - Determine to add the module by the run time > 10 mins.
+        - local_auto_shardable_test file path :
+            ~/.atest/auto_shard/local_auto_shardable_tests
+        - The file content template is module name per line:
+            <module1>
+            <module2>
+            ...
+    """
+    if run_time_in_sec < 600:
+        return
+    shardable_tests = get_local_auto_shardable_tests()
+    if test_name not in shardable_tests:
+        shardable_tests.append(test_name)
+        logging.info('%s takes %ss (> 600s) to finish. Adding to shardable '
+                    'test list.', test_name, run_time_in_sec)
+
+    if not shardable_tests:
+        logging.info('No shardable tests to run.')
+        return
+    shardable_dir = Path(get_misc_dir()).joinpath('.atest/auto_shard')
+    shardable_dir.mkdir(parents=True, exist_ok=True)
+    shardable_tests_file = shardable_dir.joinpath('local_auto_shardable_tests')
+    with open(shardable_tests_file, 'w') as file:
+        file.write('\n'.join(shardable_tests))
