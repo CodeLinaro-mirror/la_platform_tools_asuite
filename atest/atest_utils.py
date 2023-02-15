@@ -52,7 +52,6 @@ from atest import atest_decorator
 from atest import atest_error
 from atest import constants
 
-from atest.coverage import coverage
 from atest.metrics import metrics
 from atest.metrics import metrics_utils
 from atest.tf_proto import test_record_pb2
@@ -107,7 +106,7 @@ SUGGESTIONS = {
     'Runner reported an invalid method': 'Please reflash the device(s).'
 }
 
-_build_env = {}
+_BUILD_ENV = {}
 
 def get_build_cmd(dump=False):
     """Compose build command with no-absolute path and flag "--make-mode".
@@ -262,8 +261,10 @@ def get_build_out_dir():
     return os.path.join(build_top, "out")
 
 def update_build_env(env: Dict[str, str]):
-    global _build_env
-    _build_env.update(env)
+    """Method that updates build environment variables."""
+    # pylint: disable=global-statement
+    global _BUILD_ENV
+    _BUILD_ENV.update(env)
 
 def build(build_targets, verbose=False):
     """Shell out and invoke run_build_cmd to make build_targets.
@@ -281,9 +282,10 @@ def build(build_targets, verbose=False):
         logging.debug('No build targets, skipping build.')
         return True
 
-    global _build_env
+    # pylint: disable=global-statement
+    global _BUILD_ENV
     full_env_vars = os.environ.copy()
-    full_env_vars.update(_build_env)
+    full_env_vars.update(_BUILD_ENV)
     print('\n%s\n%s' % (
         colorize("Building Dependencies...", constants.CYAN),
                  ', '.join(build_targets)))
@@ -1023,7 +1025,7 @@ def load_json_safely(jsonfile):
         logging.debug('%s: File not found.', jsonfile)
     return {}
 
-def get_manifest_branch():
+def get_manifest_branch(show_aosp=False):
     """Get the manifest branch.
 
          (portal xml)                            (default xml)
@@ -1036,6 +1038,10 @@ def get_manifest_branch():
                                                     +--------+
                                                     | master |
                                                     +--------+
+
+    Args:
+        show_aosp: A boolean that shows 'aosp' prefix by checking the 'remote'
+                   attribute.
 
     Returns:
         The value of 'revision' of the included xml or default.xml.
@@ -1055,9 +1061,12 @@ def get_manifest_branch():
             return ''
         default_tags = xml_root.findall('./default')
         if default_tags:
+            prefix = ''
             for tag in default_tags:
                 branch = tag.attrib.get('revision')
-                return branch
+                if show_aosp and tag.attrib.get('remote') == 'aosp':
+                    prefix = 'aosp-'
+                return f'{prefix}{branch}'
         return ''
     def _get_include(xml):
         try:
@@ -1126,8 +1135,7 @@ def parse_mainline_modules(test):
     if not result:
         return test, ""
     test_wo_mainline_modules = result.group('test')
-    mainline_modules = [
-        module for module in result.group('mainline_modules').split('+')]
+    mainline_modules = result.group('mainline_modules').split('+')
     return test_wo_mainline_modules, mainline_modules
 
 def has_wildcard(test_name):
@@ -1890,3 +1898,18 @@ def prompt_suggestions(result_file: Path):
             # If the given is not a plain text, just ignore it.
             except Exception:
                 pass
+
+def build_files_integrity_is_ok() -> bool:
+    """Return Whether the integrity of build files is OK."""
+    # 0. Inexistence of the checksum file means a fresh repo sync.
+    if not Path(constants.BUILDFILES_MD5).is_file():
+        return False
+    # 1. Ensure no build files were added/deleted.
+    with open(constants.BUILDFILES_MD5, 'r') as cache:
+        recorded_amount = len(json.load(cache).keys())
+        cmd = (f'locate -d{constants.LOCATE_CACHE} --regex '
+               r'"/Android\.(bp|mk)$" | wc -l')
+        if int(subprocess.getoutput(cmd)) != recorded_amount:
+            return False
+    # 2. Ensure the consistency of all build files.
+    return check_md5(constants.BUILDFILES_MD5, missing_ok=False)
