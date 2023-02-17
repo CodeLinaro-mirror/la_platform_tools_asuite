@@ -38,6 +38,7 @@ import tempfile
 import time
 import platform
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from atest import atest_arg_parser
@@ -86,24 +87,55 @@ EXIT_CODES_BEFORE_TEST = [ExitCode.ENV_NOT_SETUP,
                           ExitCode.AVD_CREATE_FAILURE,
                           ExitCode.AVD_INVALID_ARGS]
 
-# TODO(b/259496712): Remove this once we no longer need to set Mainline vars.
-_DEFAULT_VARS_FOR_MAINLINE = {
-    # Only support building module using static DCLA.
-    "APEX_BUILD_FOR_PRE_S_DEVICES": "true",
+@dataclass
+class Steps:
+    """A Dataclass that stores steps and shows step assignments."""
+    _build: bool
+    _install: bool
+    _test: bool
 
-    # Do not build compressed apex.
-    "OVERRIDE_PRODUCT_COMPRESSED_APEX": "false",
+    def has_build(self):
+        """Return whether build is in steps."""
+        return self._build
 
-    # Build sdk from source.
-    "UNBUNDLED_BUILD_SDKS_FROM_SOURCE": "true",
+    def is_build_only(self):
+        """Return whether build is the only one in steps."""
+        return self._build and not any((self._test, self._install))
 
-    # The rule to create the notice file can't be generated yet,
-    # as the final output path for the apk isn't known yet.
-    # Add the path where the notice file will be generated to the
-    # aapt rules now before calling aaptBuildActions,
-    # the rule to create the notice file will be generated later.
-    "ALWAYS_EMBED_NOTICES": "true",
-}
+    def has_install(self):
+        """Return whether install is in steps."""
+        return self._install
+
+    def has_test(self):
+        """Return whether install is the only one in steps."""
+        return self._test
+
+    def is_test_only(self):
+        """Return whether build is not in steps but test."""
+        return self._test and not any((self._build, self._install))
+
+
+def parse_steps(args: atest_arg_parser.AtestArgParser) -> Steps:
+    """Return Steps object.
+
+    Args:
+        args: an AtestArgParser object.
+
+    Returns:
+        Step object that stores the boolean of build, install and test.
+    """
+    # Implicitly running 'build', 'install' and 'test' when args.steps is None.
+    if not args.steps:
+        return Steps(True, True, True)
+    build =  constants.BUILD_STEP in args.steps
+    test = constants.TEST_STEP in args.steps
+    install = constants.INSTALL_STEP in args.steps
+    if install and not test:
+        logging.warning('Installing without test step is currently not '
+                        'supported; Atest will proceed testing!')
+        test = True
+    return Steps(build, install, test)
+
 
 def _get_args_from_config():
     """Get customized atest arguments in the config file.
@@ -237,8 +269,7 @@ def get_extra_args(args):
     extra_args = {}
     if args.wait_for_debugger:
         extra_args[constants.WAIT_FOR_DEBUGGER] = None
-    steps = args.steps or constants.ALL_STEPS
-    if constants.INSTALL_STEP not in steps:
+    if not parse_steps(args).has_install():
         extra_args[constants.DISABLE_INSTALL] = None
     # The key and its value of the dict can be called via:
     # if args.aaaa:
@@ -247,7 +278,7 @@ def get_extra_args(args):
                 'annotation_filter': constants.ANNOTATION_FILTER,
                 'bazel_arg': constants.BAZEL_ARG,
                 'collect_tests_only': constants.COLLECT_TESTS_ONLY,
-                'coverage': constants.COVERAGE,
+                'experimental_coverage': constants.COVERAGE,
                 'custom_args': constants.CUSTOM_ARGS,
                 'device_only': constants.DEVICE_ONLY,
                 'disable_teardown': constants.DISABLE_TEARDOWN,
@@ -358,6 +389,9 @@ def _validate_adb_devices(args, test_infos):
         args: parsed args object.
         test_info: TestInfo object.
     """
+    # No need to check device availability if the user does not acquire to test.
+    if not parse_steps(args).has_test():
+        return
     if args.no_checking_device:
         return
     all_device_modes = {x.get_supported_exec_mode() for x in test_infos}
@@ -793,13 +827,11 @@ def _exclude_modules_in_targets(build_targets):
     return shrank_build_targets
 
 # pylint: disable=protected-access
-def need_rebuild_module_info(test_steps: None,
-                             force_rebuild: bool = False) -> bool:
+def need_rebuild_module_info(args: atest_arg_parser.AtestArgParser) -> bool:
     """Method that tells whether we need to rebuild module-info.json or not.
 
     Args:
-        test_steps: a list of steps, e.g. ['build','test']
-        force_rebuild: a boolean given from args.rebuild_module_info.
+        args: an AtestArgParser object.
 
         +-----------------+
         | Explicitly pass |  yes
@@ -824,10 +856,10 @@ def need_rebuild_module_info(test_steps: None,
     Returns:
         True for forcely/smartly rebuild, otherwise False without rebuilding.
     """
-    if test_steps and constants.BUILD_STEP not in test_steps:
+    if not parse_steps(args).has_build():
         logging.debug('\"--test\" mode detected, will not rebuild module-info.')
         return False
-    if force_rebuild:
+    if args.rebuild_module_info:
         msg = (f'`{constants.REBUILD_MODULE_INFO_FLAG}` is no longer needed '
                f'since Atest can smartly rebuild {module_info._MODULE_INFO} '
                r'only when needed.')
@@ -860,7 +892,7 @@ def need_run_index_targets(args, extra_args):
         return False
     if extra_args.get(constants.VERIFY_ENV_VARIABLE, False):
         return False
-    if args.steps and 'test' in args.steps:
+    if not parse_steps(args).has_build():
         return False
     return True
 
@@ -960,7 +992,7 @@ def main(argv, results_dir, args):
     _begin_time = time.time()
 
     # Sets coverage environment variables.
-    if args.coverage:
+    if args.experimental_coverage:
         atest_utils.update_build_env(coverage.build_env_vars())
 
     _configure_logging(args.verbose)
@@ -987,9 +1019,7 @@ def main(argv, results_dir, args):
     # Do not index targets while the users intend to dry-run tests.
     if need_run_index_targets(args, extra_args):
         proc_idx = atest_utils.run_multi_proc(at.index_targets)
-    smart_rebuild = need_rebuild_module_info(
-        test_steps=args.steps,
-        force_rebuild=args.rebuild_module_info)
+    smart_rebuild = need_rebuild_module_info(args)
 
     mod_start = time.time()
     mod_info = module_info.ModuleInfo(force_build=smart_rebuild)
@@ -1002,7 +1032,7 @@ def main(argv, results_dir, args):
         args=[mod_info.module_index.parent])
 
     # Run Test Mapping or coverage by no-bazel-mode.
-    if atest_utils.is_test_mapping(args) or args.coverage:
+    if atest_utils.is_test_mapping(args) or args.experimental_coverage:
         atest_utils.colorful_print('Not running using bazel-mode.', constants.YELLOW)
         args.bazel_mode = False
     if args.bazel_mode:
@@ -1064,17 +1094,12 @@ def main(argv, results_dir, args):
             _validate_tm_tests_exec_mode(args, test_infos)
         # Detect auto sharding and trigger creating AVDs
         if args.auto_sharding and _is_auto_shard_test(test_infos):
-            # TODO: Create 2 AVDs
-            extra_args.update({constants.SHARDING: 2})
-
-    # Note that we update the Mainline build env vars after we potentially rebuild
-    # module info. This ends up changing build flags which re-triggers a costly
-    # build. This is not an issue when module-info is cached however.
-    # TODO(b/259496712): Remove this once we no longer need to set Mainline vars.
-    for test_info in test_infos:
-        if test_info.mainline_modules:
-            atest_utils.update_build_env(_DEFAULT_VARS_FOR_MAINLINE)
-            break
+            extra_args.update({constants.SHARDING: constants.SHARD_NUM})
+            if not (any(dry_run_args) or verify_env_variables):
+                # TODO: check existing devices.
+                args.acloud_create = [f'--num-instances={constants.SHARD_NUM}']
+                proc_acloud, report_file = at.acloud_create_validator(
+                    results_dir, args)
 
     # TODO: change to another approach that put constants.CUSTOM_ARGS in the
     # end of command to make sure that customized args can override default
@@ -1108,10 +1133,10 @@ def main(argv, results_dir, args):
     if args.detect_regression:
         build_targets |= (regression_test_runner.RegressionTestRunner('')
                           .get_test_runner_build_reqs())
-    # args.steps will be None if none of -bit set, else list of params set.
-    steps = args.steps if args.steps else constants.ALL_STEPS
-    if build_targets and constants.BUILD_STEP in steps:
-        if args.coverage:
+
+    steps = parse_steps(args)
+    if build_targets and steps.has_build():
+        if args.experimental_coverage:
             build_targets.add('jacoco_to_lcov_converter')
 
         # Add module-info.json target to the list of build targets to keep the
@@ -1148,16 +1173,12 @@ def main(argv, results_dir, args):
         # After build step 'adb' command will be available, and stop forward to
         # Tradefed if the tests require a device.
         _validate_adb_devices(args, test_infos)
-    elif constants.TEST_STEP not in steps:
-        logging.warning('Install step without test step currently not '
-                        'supported, installing AND testing instead.')
-        steps.append(constants.TEST_STEP)
 
     tests_exit_code = ExitCode.SUCCESS
     test_start = time.time()
-    if constants.TEST_STEP in steps:
-        # Only send duration to metrics when passing --test and not --build.
-        if constants.BUILD_STEP not in steps:
+    if steps.has_test():
+        # Only send duration to metrics when no --build.
+        if not steps.has_build():
             _init_and_find = time.time() - _begin_time
             logging.debug('Initiation and finding tests took %ss', _init_and_find)
             metrics.LocalDetectEvent(
@@ -1171,7 +1192,7 @@ def main(argv, results_dir, args):
         else:
             tests_exit_code = _run_test_mapping_tests(
                 results_dir, test_infos, extra_args, mod_info)
-        if args.coverage:
+        if args.experimental_coverage:
             coverage.generate_coverage_report(results_dir, test_infos, mod_info)
     if args.detect_regression:
         regression_args = _get_regression_detection_args(args, results_dir)

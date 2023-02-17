@@ -108,6 +108,7 @@ SUGGESTIONS = {
 
 _BUILD_ENV = {}
 
+
 def get_build_cmd(dump=False):
     """Compose build command with no-absolute path and flag "--make-mode".
 
@@ -361,7 +362,8 @@ def is_test_mapping(args):
     which means the test value is a test group name in TEST_MAPPING file, e.g.,
     `:postsubmit`.
 
-    If --host-unit-test-only be applied, it's not test mapping.
+    If --host-unit-test-only or --smart-testing-local was applied, it doesn't
+    intend to be a test_mapping test.
     If any test mapping options is specified, the atest command must also be
     set to run tests in test mapping files.
 
@@ -372,12 +374,12 @@ def is_test_mapping(args):
         True if the args indicates atest shall run tests in test mapping. False
         otherwise.
     """
-    return (
-        not args.host_unit_test_only and
-        (args.test_mapping or
-        args.include_subdirs or
-        not args.tests or
-        (len(args.tests) == 1 and args.tests[0][0] == ':')))
+    if any((args.host_unit_test_only, args.smart_testing_local)):
+        return False
+    if any((args.test_mapping, args.include_subdirs, not args.tests)):
+        return True
+    # ':postsubmit' implicitly indicates running in test-mapping mode.
+    return all((len(args.tests) == 1, args.tests[0][0] == ':'))
 
 
 @atest_decorator.static_var("cached_has_colors", {})
@@ -1161,23 +1163,6 @@ def build_module_info_target(module_info_target):
     metrics.LocalDetectEvent(
         detect_type=DetectType.ONLY_BUILD_MODULE_INFO,
         result=int(build_duration))
-
-def parse_mainline_modules(test):
-    """Parse test reference into test and mainline modules.
-
-    Args:
-        test: An String of test reference.
-
-    Returns:
-        A string of test without mainline modules,
-        A list of mainline modules.
-    """
-    result = constants.TEST_WITH_MAINLINE_MODULES_RE.match(test)
-    if not result:
-        return test, ""
-    test_wo_mainline_modules = result.group('test')
-    mainline_modules = result.group('mainline_modules').split('+')
-    return test_wo_mainline_modules, mainline_modules
 
 def has_wildcard(test_name):
     """ Tell whether the test_name(either a list or string) contains wildcard
