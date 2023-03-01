@@ -28,7 +28,7 @@ import tempfile
 import time
 
 from pathlib import Path
-from typing import Any, Dict, Set
+from typing import Any, Dict, List, Set
 
 from atest import atest_utils
 from atest import constants
@@ -697,20 +697,21 @@ class ModuleInfo:
         return constants.MODULE_CLASS_NATIVE_TESTS in mod_info.get(
             constants.MODULE_CLASS, [])
 
-    def has_mainline_modules(self, module_name, mainline_modules):
+    def has_mainline_modules(self,
+            module_name: str, mainline_binaries: List[str]) -> bool:
         """Check if the mainline modules are in module-info.
 
         Args:
             module_name: A string of the module name.
-            mainline_modules: A list of mainline modules.
+            mainline_binaries: A list of mainline module binaries.
 
         Returns:
-            True if mainline_modules is in module-info, False otherwise.
+            True if mainline_binaries is in module-info, False otherwise.
         """
         mod_info = self.get_module_info(module_name)
         # Check 'test_mainline_modules' attribute of the module-info.json.
         mm_in_mf = mod_info.get(constants.MODULE_MAINLINE_MODULES, [])
-        ml_modules_set = set(mainline_modules)
+        ml_modules_set = set(mainline_binaries)
         if mm_in_mf:
             return contains_same_mainline_modules(
                 ml_modules_set, set(mm_in_mf))
@@ -969,7 +970,7 @@ class ModuleInfo:
                     modules.append(mod_name)
         return modules
 
-    def get_modules_by_path_in_srcs(self, path: str) -> str:
+    def get_modules_by_path_in_srcs(self, path: str) -> Set:
         """Get the module name that the given path belongs to.(in 'srcs')
 
         Args:
@@ -980,7 +981,7 @@ class ModuleInfo:
         """
         modules = set()
         for _, mod_info in self.name_to_module_info.items():
-            if path in mod_info.get(constants.MODULE_SRCS, []):
+            if str(path) in mod_info.get(constants.MODULE_SRCS, []):
                 modules.add(mod_info.get(constants.MODULE_NAME))
         return modules
 
