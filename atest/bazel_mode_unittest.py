@@ -113,7 +113,6 @@ class GenerationTestFixture(fake_filesystem_unittest.TestCase):
         generator.generate()
 
     # pylint: disable=protected-access
-    @mock.patch.dict('os.environ', {constants.ANDROID_BUILD_TOP: '/'})
     def create_empty_module_info(self):
         fake_temp_file_name = next(tempfile._get_candidate_names())
         self.fs.create_file(fake_temp_file_name, contents='{}')
@@ -1240,7 +1239,6 @@ class SharedLibPrebuiltTargetGenerationTest(GenerationTestFixture):
             host_module(
                 name='libhello',
                 installed=[str(host_file)],
-                auto_test_config=['true']
             )
         ])
         package_path = self.workspace_out_path
@@ -1331,7 +1329,6 @@ class DataDependenciesGenerationTest(GenerationTestFixture):
         self.assertTargetNotInWorkspace('libdata')
 
 
-@mock.patch.dict('os.environ', {constants.ANDROID_BUILD_TOP: '/'})
 def create_empty_module_info():
     with fake_filesystem_unittest.Patcher() as patcher:
         # pylint: disable=protected-access
