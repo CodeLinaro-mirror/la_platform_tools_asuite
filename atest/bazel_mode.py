@@ -47,6 +47,8 @@ from types import MappingProxyType
 from typing import Any, Callable, Dict, IO, List, Set
 from xml.etree import ElementTree as ET
 
+from google.protobuf.message import DecodeError
+
 from atest import atest_utils
 from atest import constants
 from atest import module_info
@@ -291,7 +293,13 @@ class ResourceManager:
 
         with open(self._md5_checksum_file, 'rb') as f:
             file_md5_list = file_md5_pb2.FileChecksumList()
-            file_md5_list.ParseFromString(f.read())
+
+            try:
+                file_md5_list.ParseFromString(f.read())
+            except DecodeError:
+                logging.warning(
+                    'Failed to parse the workspace md5 checksum file.')
+                return False
 
             for file_md5 in file_md5_list.file_checksums:
                 abs_path = (Path(self._root_type_to_path[file_md5.root_type])
@@ -1518,13 +1526,24 @@ def create_new_finder(mod_info: module_info.ModuleInfo,
                                    finder.finder_info)
 
 
+class RunCommandError(subprocess.CalledProcessError):
+    """CalledProcessError but including debug information when it fails."""
+    def __str__(self):
+        return f'{super().__str__()}\nstdout={self.stdout}\n\nstderr={self.stderr}'
+
+
 def default_run_command(args: List[str], cwd: Path) -> str:
-    return subprocess.check_output(
+    result = subprocess.run(
         args=args,
         cwd=cwd,
         text=True,
-        stderr=subprocess.DEVNULL,
+        capture_output=True,
     )
+    if result.returncode:
+        # Provide a more detailed log message including stdout and stderr.
+        raise RunCommandError(result.returncode, result.args, result.stdout,
+                              result.stderr)
+    return result.stdout
 
 
 @dataclasses.dataclass
