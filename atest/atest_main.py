@@ -408,6 +408,11 @@ def _validate_adb_devices(args, test_infos):
         return
     if args.no_checking_device:
         return
+    # No need to check local device availability if the device test is running
+    # remotely.
+    if (args.bazel_mode_features and bazel_mode.Features.EXPERIMENTAL_REMOTE_AVD
+            in args.bazel_mode_features):
+        return
     all_device_modes = {x.get_supported_exec_mode() for x in test_infos}
     device_tests = [x.test_name for x in test_infos
         if x.get_supported_exec_mode() != constants.DEVICELESS_TEST]
@@ -972,8 +977,6 @@ def set_build_output_mode(mode: atest_utils.BuildOutputMode):
     # Changing this variable does not retrigger builds.
     atest_utils.update_build_env(
         {'ANDROID_QUIET_BUILD': 'true',
-         #(b/271654778) Showing the reasons for the ninja file was regenerated.
-         'SOONG_UI_NINJA_ARGS': '-d explain',
          'BUILD_OUTPUT_MODE': mode.value})
 
 
