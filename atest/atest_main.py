@@ -38,6 +38,8 @@ import tempfile
 import time
 import platform
 
+from typing import Dict, List
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +63,8 @@ from atest.metrics import metrics_base
 from atest.metrics import metrics_utils
 from atest.test_finders import test_finder_utils
 from atest.test_runners import regression_test_runner
+from atest.test_runners import roboleaf_test_runner
+from atest.test_finders.test_info import TestInfo
 from atest.tools import atest_tools as at
 
 EXPECTED_VARS = frozenset([
@@ -896,6 +900,25 @@ def need_run_index_targets(args, extra_args):
         return False
     return True
 
+def _all_tests_are_bazel_buildable(
+    roboleaf_tests: Dict[str, TestInfo],
+    tests: List[str]) -> bool:
+    """Method that determines whether all tests have been fully converted to
+    bazel mode (roboleaf).
+
+    If all tests are fully converted, then indexing, generating mod-info, and
+    generating atest bazel workspace can be skipped since dependencies are
+    mapped already with `b`.
+
+    Args:
+        roboleaf_tests: A dictionary keyed by testname of roboleaf tests.
+        tests: A list of testnames.
+
+    Returns:
+        True when none of the above conditions were found.
+    """
+    return roboleaf_tests and set(tests) == set(roboleaf_tests)
+
 def perm_consistency_metrics(test_infos, mod_info, args):
     """collect inconsistency between preparer and device root permission.
 
@@ -1004,34 +1027,46 @@ def main(argv, results_dir, args):
         os.environ.get(constants.ANDROID_PRODUCT_OUT, ''))
     extra_args = get_extra_args(args)
     verify_env_variables = extra_args.get(constants.VERIFY_ENV_VARIABLE, False)
-    proc_idx = None
-    # Do not index targets while the users intend to dry-run tests.
-    if need_run_index_targets(args, extra_args):
-        proc_idx = atest_utils.run_multi_proc(at.index_targets)
-    smart_rebuild = need_rebuild_module_info(args)
 
-    mod_start = time.time()
-    mod_info = module_info.ModuleInfo(force_build=smart_rebuild)
-    mod_stop = time.time() - mod_start
-    metrics.LocalDetectEvent(detect_type=DetectType.MODULE_INFO_INIT_MS,
-                             result=int(mod_stop * 1000))
-    atest_utils.run_multi_proc(func=mod_info._save_module_info_checksum)
-    atest_utils.run_multi_proc(
-        func=atest_utils.generate_buildfiles_checksum,
-        args=[mod_info.module_index.parent])
+    # Gather roboleaf tests now to see if we can skip mod info generation.
+    mod_info = module_info.ModuleInfo(no_generate=True)
+    if args.roboleaf_mode:
+        mod_info.roboleaf_tests = roboleaf_test_runner.RoboleafTestRunner(
+            results_dir).roboleaf_eligible_tests(args.tests)
+    all_tests_are_bazel_buildable = _all_tests_are_bazel_buildable(
+                                mod_info.roboleaf_tests,
+                                args.tests)
 
     # Run Test Mapping or coverage by no-bazel-mode.
     if atest_utils.is_test_mapping(args) or args.experimental_coverage:
         atest_utils.colorful_print('Not running using bazel-mode.', constants.YELLOW)
         args.bazel_mode = False
-    if args.bazel_mode:
-        start = time.time()
-        bazel_mode.generate_bazel_workspace(
-            mod_info,
-            enabled_features=set(args.bazel_mode_features or []))
-        metrics.LocalDetectEvent(
-            detect_type=DetectType.BAZEL_WORKSPACE_GENERATE_TIME,
-            result=int(time.time() - start))
+
+    proc_idx = None
+    if not all_tests_are_bazel_buildable:
+        # Do not index targets while the users intend to dry-run tests.
+        if need_run_index_targets(args, extra_args):
+            proc_idx = atest_utils.run_multi_proc(at.index_targets)
+        smart_rebuild = need_rebuild_module_info(args)
+
+        mod_start = time.time()
+        mod_info = module_info.ModuleInfo(force_build=smart_rebuild)
+        mod_stop = time.time() - mod_start
+        metrics.LocalDetectEvent(detect_type=DetectType.MODULE_INFO_INIT_MS,
+                                 result=int(mod_stop * 1000))
+        atest_utils.run_multi_proc(func=mod_info._save_module_info_checksum)
+        atest_utils.run_multi_proc(
+            func=atest_utils.generate_buildfiles_checksum,
+            args=[mod_info.module_index.parent])
+
+        if args.bazel_mode:
+            start = time.time()
+            bazel_mode.generate_bazel_workspace(
+                mod_info,
+                enabled_features=set(args.bazel_mode_features or []))
+            metrics.LocalDetectEvent(
+                detect_type=DetectType.BAZEL_WORKSPACE_GENERATE_TIME,
+                result=int(time.time() - start))
 
     translator = cli_translator.CLITranslator(
         mod_info=mod_info,
@@ -1259,24 +1294,22 @@ if __name__ == '__main__':
             if result_file:
                 print("Run 'atest --history' to review test result history.")
 
-    # Will only asking internal google user to do this survey.
+    # Only asking internal google user to do this survey.
     if metrics_base.get_user_type() == metrics_base.INTERNAL_USER:
         # The bazel_mode value will only be false if user apply --no-bazel-mode.
         if not atest_configs.GLOBAL_ARGS.bazel_mode:
-            SURVEY_LINK = 'http://go/atest-no-bazel-survey'
-            MESSAGE = ('Dear `--no-bazel-mode` users,\n\n'
-                       'We are conducting a survey to understand why you are '
-                       'still using `--no-bazel-mode`. The survey should take '
-                       'less than 3 minutes and your responses will be kept '
-                       'confidential and will only be used to improve our '
-                       'understanding of the situation.\n\n'
-                       'Please click on the link below to begin the survey:\n\n'
-                       '{}\n\n'
-                       'Thanks for your time and feedback.\n\n'
-                       'Sincerely,\n'
-                       'The ATest Team')
+            MESSAGE = ('\nDear `--no-bazel-mode` users,\n'
+                         'We are conducting a survey to understand why you are '
+                         'still using `--no-bazel-mode`. The survey should '
+                         'take less than 3 minutes and your responses will be '
+                         'kept confidential and will only be used to improve '
+                         'our understanding of the situation. Please click on '
+                         'the link below to begin the survey:\n\n'
+                         'http://go/atest-no-bazel-survey\n\n'
+                         'Thanks for your time and feedback.\n\n'
+                         'Sincerely,\n'
+                         'The ATest Team')
 
-            print(MESSAGE.format(
-                atest_utils.colorize(SURVEY_LINK, constants.BLUE)))
+            print(atest_utils.colorize(MESSAGE, constants.BLACK, bp_color=constants.CYAN))
 
     sys.exit(EXIT_CODE)
