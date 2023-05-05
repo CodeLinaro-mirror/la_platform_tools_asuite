@@ -21,7 +21,7 @@ from enum import IntEnum, unique, Enum
 @unique
 class DetectType(IntEnum):
     """An Enum class for local_detect_event."""
-    # Detect type for local_detect_event; next expansion: 46
+    # Detect type for local_detect_event; next expansion: 47
     BUG_DETECTED = 0
     ACLOUD_CREATE = 1
     FIND_BUILD = 2
@@ -83,6 +83,8 @@ class DetectType(IntEnum):
     # To indicate if the invocation is using test-mapping, send non-zero value
     # if the invocation is test-mapping mode.
     IS_TEST_MAPPING = 45
+    # The RBE_STATE indicates the combined state of the RBE and customized out.
+    RBE_STATE = 46
 
 @unique
 class ExitCode(IntEnum):
@@ -103,6 +105,7 @@ class ExitCode(IntEnum):
     INPUT_TEST_REFERENCE_ERROR = 13
     CONFIG_INVALID_FORMAT = 14
     INVALID_SMART_TESTING_PATH = 15
+    INVALID_EXEC_MODE = 16
     # The code > 100 are reserved for collecting data only, actually the run
     # doesn't finish at the point.
     COLLECT_ONLY_FILE_NOT_FOUND = 101
