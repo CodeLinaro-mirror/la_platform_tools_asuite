@@ -158,26 +158,21 @@ class ModuleInfo:
                          module_info file regardless of the existence of it.
 
         Returns:
-            Tuple of module_info_target and path to module file.
+            Tuple of module_info_target and path to the module-info.json.
         """
         logging.debug('Probing and validating module info...')
-        module_info_target = None
-        root_dir = os.environ.get(constants.ANDROID_BUILD_TOP, '/')
-        out_dir = os.environ.get(constants.ANDROID_PRODUCT_OUT, root_dir)
-        module_file_path = os.path.join(out_dir, _MODULE_INFO)
+        root_dir = Path(os.getenv(constants.ANDROID_BUILD_TOP))
+        out_dir = Path(os.getenv(constants.ANDROID_PRODUCT_OUT))
+        module_file_path = out_dir.joinpath(_MODULE_INFO)
 
-        # Check if the user set a custom out directory by comparing the out_dir
-        # to the root_dir.
-        if out_dir.find(root_dir) == 0:
-            # Make target is simply file path no-absolute to root
-            module_info_target = os.path.relpath(module_file_path, root_dir)
+        # If OUT_DIR/OUT_DIR_COMMON_BASE was set outside of the root_dir, use
+        # absolute path; otherwise use relative path as the target name.
+        if out_dir.is_relative_to(root_dir):
+            module_info_target = str(module_file_path.relative_to(root_dir))
         else:
-            # If the user has set a custom out directory, generate an absolute
-            # path for module info targets.
             logging.debug('User customized out dir!')
-            module_file_path = os.path.join(
-                os.environ.get(constants.ANDROID_PRODUCT_OUT), _MODULE_INFO)
-            module_info_target = module_file_path
+            module_file_path = out_dir.joinpath(_MODULE_INFO)
+            module_info_target = str(module_file_path)
         if force_build:
             atest_utils.build_module_info_target(module_info_target)
         return module_info_target, module_file_path
@@ -458,7 +453,7 @@ class ModuleInfo:
             return False
         if self.is_tradefed_testable_module(info):
             return True
-        if self.is_legacy_robolectric_test(info.get(constants.MODULE_NAME)):
+        if self.is_legacy_robolectric_test(info):
             return True
         return False
 
@@ -479,11 +474,13 @@ class ModuleInfo:
         return bool(info.get(constants.MODULE_TEST_CONFIG, []) or
                     info.get('auto_test_config', []))
 
-    def is_legacy_robolectric_test(self, module_name: str) -> bool:
+    def is_legacy_robolectric_test(self, info: Dict[str, Any]) -> bool:
         """Return whether the module_name is a legacy Robolectric test"""
-        return bool(self.get_robolectric_test_name(module_name))
+        if self.is_tradefed_testable_module(info):
+            return False
+        return bool(self.get_robolectric_test_name(info))
 
-    def get_robolectric_test_name(self, module_name: str) -> str:
+    def get_robolectric_test_name(self, info: Dict[str, Any]) -> str:
         """Returns runnable robolectric module name.
 
         This method is for legacy robolectric tests and returns one of associated
@@ -495,13 +492,14 @@ class ModuleInfo:
             FooTests -> RunFooTests
 
         Arg:
-            module_name: String of module.
+            info: Dict of module info to check.
 
         Returns:
             String of the first-matched associated module that belongs to the
             actual robolectric module, None if nothing has been found.
         """
-        info = self.get_module_info(module_name) or {}
+        if not info:
+            return ''
         module_paths = info.get(constants.MODULE_PATH, [])
         if not module_paths:
             return ''
@@ -532,7 +530,7 @@ class ModuleInfo:
             return True
         return False
 
-    def get_robolectric_type(self, module_name):
+    def get_robolectric_type(self, module_name: str) -> int:
         """Check if the given module is a robolectric test and return type of it.
 
         Robolectric declaration is converting from Android.mk to Android.bp, and
@@ -548,12 +546,12 @@ class ModuleInfo:
             SettingsRoboTests -> make RunSettingsRoboTests0
 
         To determine whether the test is a modern/legacy robolectric test:
-            1. Traverse all modules share the module path. If one of the
-               modules has a ROBOLECTRIC class, it is a robolectric test.
-            2. If the 'robolectric-test` in the compatibility_suites, it's a
+            1. If the 'robolectric-test` in the compatibility_suites, it's a
                modern one, otherwise it's a legacy test. This is accurate since
                aosp/2308586 already set the test suite of `robolectric-test`
                for all `modern` Robolectric tests in Soong.
+            2. Traverse all modules share the module path. If one of the
+               modules has a ROBOLECTRIC class, it's a legacy robolectric test.
 
         Args:
             module_name: String of module to check.
@@ -568,10 +566,10 @@ class ModuleInfo:
             return 0
         # Some Modern mode Robolectric test has related module which compliant
         # with the Legacy Robolectric test. In this case, the Modern mode
-        # Robolectric tests should prior to Legacy mode.
+        # Robolectric tests should be prior to the Legacy mode.
         if self.is_modern_robolectric_test(info):
             return constants.ROBOTYPE_MODERN
-        if self.is_legacy_robolectric_test(module_name):
+        if self.is_legacy_robolectric_test(info):
             return constants.ROBOTYPE_LEGACY
         return 0
 
