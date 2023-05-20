@@ -538,9 +538,6 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
 
         build_targets = {t.name() for t in build_targets}
 
-        if self.module_info.is_module(constants.GTF_MODULE):
-            build_targets |= {constants.GTF_TARGET}
-
         return build_targets
 
     def _create_test(self, t_info: test_info.TestInfo) -> Test:
@@ -551,11 +548,14 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
             raise Error(
                 f'Could not find module information for {t_info.raw_test_name}')
 
-        if self._is_host_enabled():
-            raise Error('--minimal-build is unsupported for deviceless tests')
-
-        if self.module_info.is_device_driven_test(info):
+        if not self._is_host_enabled() and self.module_info.is_device_driven_test(info):
             return DeviceTest(info, Variant.DEVICE)
+
+        if self.module_info.is_modern_robolectric_test(info):
+            return DevicelessTest(info, Variant.DEVICE)
+
+        if self.module_info.is_host_unit_test(info):
+            return DevicelessTest(info, Variant.HOST)
 
         raise Error(
             f'--minimal-build is unsupported for {t_info.raw_test_name}')
@@ -1319,9 +1319,27 @@ class Target:
 class Test(ABC):
     """A test that can be run."""
 
-    @abstractmethod
+    _DEFAULT_HARNESS_TARGETS = frozenset([
+        Target('atest-tradefed', Variant.HOST),
+        Target('atest_script_help.sh', Variant.HOST),
+        Target('atest_tradefed.sh', Variant.HOST),
+        Target('tradefed', Variant.HOST),
+    ])
+
     def query_build_targets(self) -> Set[Target]:
         """Returns the list of build targets required to run this test."""
+        build_targets = set()
+        build_targets.update(self._get_harness_build_targets())
+        build_targets.update(self._get_test_build_targets())
+        return build_targets
+
+    @abstractmethod
+    def _get_test_build_targets(self) -> Set[Target]:
+        """Returns the list of build targets of test and its dependencies."""
+
+    @abstractmethod
+    def _get_harness_build_targets(self) -> Set[Target]:
+        """Returns the list of build targets of test harness and its dependencies."""
 
 
 class DeviceTest(Test):
@@ -1331,24 +1349,38 @@ class DeviceTest(Test):
         self._info = info
         self._variant = variant
 
-    def query_build_targets(self) -> Set[Target]:
-        build_targets = set()
-        build_targets.update(self._get_harness_build_targets())
-        build_targets.update(self._get_test_build_targets())
+    def _get_test_build_targets(self) -> Set[Target]:
+        module_name = self._info[constants.MODULE_INFO_ID]
+        return set([Target(module_name, self._variant)])
+
+    def _get_harness_build_targets(self):
+        build_targets = set(Test._DEFAULT_HARNESS_TARGETS)
+        build_targets.update(set([
+            Target('adb', Variant.HOST),
+            Target('aapt', Variant.HOST),
+            Target('aapt2', Variant.HOST),
+            Target('compatibility-tradefed', Variant.HOST),
+        ]))
+
+        for target in constants.GTF_TARGETS:
+            build_targets.add(Target(target, Variant.HOST))
+
         return build_targets
 
-    def _get_harness_build_targets(self) -> Set[Target]:
-        return set([
-          Target('aapt', Variant.HOST),
-          Target('aapt2', Variant.HOST),
-          Target('adb', Variant.HOST),
-          Target('atest-tradefed', Variant.HOST),
-          Target('atest_script_help.sh', Variant.HOST),
-          Target('atest_tradefed.sh', Variant.HOST),
-          Target('compatibility-tradefed', Variant.HOST),
-          Target('tradefed', Variant.HOST),
-        ])
+
+class DevicelessTest(Test):
+    def __init__(self, info: Dict[str, Any], variant: Variant):
+        self._info = info
+        self._variant = variant
 
     def _get_test_build_targets(self) -> Set[Target]:
         module_name = self._info[constants.MODULE_INFO_ID]
         return set([Target(module_name, self._variant)])
+
+    def _get_harness_build_targets(self):
+        build_targets = set(Test._DEFAULT_HARNESS_TARGETS)
+        build_targets.update(set([
+            # TODO(b/277116853): Remove the adb dependency for deviceless tests.
+            Target('adb', Variant.HOST),
+        ]))
+        return build_targets
