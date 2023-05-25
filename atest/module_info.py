@@ -213,8 +213,6 @@ class ModuleInfo:
         # module_info_target stays None.
         module_info_target = None
         file_path = module_file
-        previous_checksum = atest_utils.load_json_safely(
-            self.module_info_checksum)
         if not file_path:
             module_info_target, file_path = self._discover_mod_file_and_target(
                 self.force_build)
@@ -222,7 +220,7 @@ class ModuleInfo:
         # Even undergone a rebuild after _discover_mod_file_and_target(), merge
         # atest_merged_dep.json only when module_deps_infos actually change so
         # that Atest can decrease disk I/O and ensure data accuracy at all.
-        self.update_merge_info = self.need_update_merged_file(previous_checksum)
+        self.update_merge_info = self.need_update_merged_file()
         start = time.time()
         if self.update_merge_info:
             # Load the $ANDROID_PRODUCT_OUT/module-info.json for merging.
@@ -889,7 +887,7 @@ class ModuleInfo:
                       install_deps, module_name)
         return install_deps
 
-    def need_update_merged_file(self, checksum):
+    def need_update_merged_file(self):
         """Check if need to update/generated atest_merged_dep.
 
         There are 2 scienarios that atest_merged_dep.json will be updated.
@@ -902,12 +900,13 @@ class ModuleInfo:
         Returns:
             True if one of the scienarios reaches, False otherwise.
         """
-        current_checksum = {str(name): atest_utils.md5sum(name) for name in [
-            self.mod_info_file_path,
-            self.java_dep_path,
-            self.cc_dep_path]}
-        return (checksum != current_checksum or
-            not Path(self.merged_dep_path).is_file())
+        data = atest_utils.load_json_safely(self.module_info_checksum)
+        for f in [self.mod_info_file_path,
+                  self.java_dep_path,
+                  self.cc_dep_path]:
+            if atest_utils.md5sum(f) != data.get(str(f), ''):
+                return True
+        return not self.merged_dep_path.is_file()
 
     def is_unit_test(self, mod_info):
         """Return True if input module is unit test, False otherwise.
@@ -1042,6 +1041,18 @@ class ModuleInfo:
                 set(mod_info.get(constants.MODULE_DEPENDENCIES, []))):
                 modules.add(mod_info.get(constants.MODULE_NAME))
         return modules
+
+    def get_installed_paths(self, module_name: str) -> [Path]:
+        mod_info = self.get_module_info(module_name)
+        if not mod_info:
+            return []
+
+        def _to_abs_path(p):
+            if os.path.isabs(p):
+                return Path(p)
+            return Path(os.getenv(constants.ANDROID_BUILD_TOP), p)
+
+        return [_to_abs_path(p) for p in mod_info.get('installed', [])]
 
 
 def _add_missing_variant_modules(name_to_module_info: Dict[str, Module]):
