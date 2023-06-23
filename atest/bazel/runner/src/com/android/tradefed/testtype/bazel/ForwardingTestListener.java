@@ -47,6 +47,12 @@ abstract class ForwardingTestListener implements ILogSaverListener, ISupportGran
         delegate().testLog(dataName, dataType, dataStream);
     }
 
+    @Override
+    public void testRunStarted(String runName, int testCount) {
+        delegate().testRunStarted(runName, testCount);
+    }
+
+    @Override
     public void testRunStarted(String runName, int testCount, int attemptNumber) {
         delegate().testRunStarted(runName, testCount, attemptNumber);
     }
@@ -179,33 +185,22 @@ abstract class ForwardingTestListener implements ILogSaverListener, ISupportGran
     @Override
     public void testLogSaved(
             String dataName, LogDataType dataType, InputStreamSource dataStream, LogFile logFile) {
-        if (!(delegate() instanceof ILogSaverListener)) {
-            return;
-        }
-        ((ILogSaverListener) delegate()).testLogSaved(dataName, dataType, dataStream, logFile);
+
+        TestListeners.testLogSaved(delegate(), dataName, dataType, dataStream, logFile);
     }
 
     @Override
     public void logAssociation(String dataName, LogFile logFile) {
-        if (!(delegate() instanceof ILogSaverListener)) {
-            return;
-        }
-        ((ILogSaverListener) delegate()).logAssociation(dataName, logFile);
+        TestListeners.logAssociation(delegate(), dataName, logFile);
     }
 
     @Override
     public void setLogSaver(ILogSaver logSaver) {
-        if (!(delegate() instanceof ILogSaverListener)) {
-            return;
-        }
-        ((ILogSaverListener) delegate()).setLogSaver(logSaver);
+        TestListeners.setLogSaver(delegate(), logSaver);
     }
 
     @Override
     public boolean supportGranularResults() {
-        if (!(delegate() instanceof ISupportGranularResults)) {
-            return false;
-        }
-        return ((ISupportGranularResults) delegate()).supportGranularResults();
+        return TestListeners.supportGranularResults(delegate());
     }
 }

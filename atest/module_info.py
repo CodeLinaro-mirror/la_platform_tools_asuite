@@ -17,6 +17,7 @@ Module Info class used to hold cached module-info.json.
 """
 
 # pylint: disable=line-too-long,too-many-lines
+from __future__ import annotations
 
 import json
 import logging
@@ -51,14 +52,30 @@ _MERGED_INFO = 'atest_merged_dep.json'
 Module = Dict[str, Any]
 
 
-def load_from_file(module_file):
+def load_from_file(
+        module_file: Path = None,
+        force_build: bool = False,
+    ) -> ModuleInfo:
     """Factory method that initializes ModuleInfo from the build-generated
     JSON file"""
-    return ModuleInfo(module_file=module_file)
+    return ModuleInfo(module_file=module_file, force_build=force_build)
 
-def load_from_dict(name_to_module_info: Dict[str, Any]):
+
+def load_from_dict(name_to_module_info: Dict[str, Any]) -> ModuleInfo:
     """Factory method that initializes ModuleInfo from a dictionary."""
-    return ModuleInfo(module_info_dict=name_to_module_info)
+    with tempfile.NamedTemporaryFile(mode='w') as f:
+        # TODO: Serialize the input dict to JSON.
+        json.dump({}, f)
+        mi = load_from_file(module_file=f.name)
+
+    mi.name_to_module_info.update(name_to_module_info)
+
+    return mi
+
+
+def create_empty() -> ModuleInfo:
+    """Factory method that initializes an empty ModuleInfo."""
+    return ModuleInfo(no_generate=True)
 
 
 class ModuleInfo:
@@ -68,8 +85,7 @@ class ModuleInfo:
         self,
         force_build=False,
         module_file=None,
-        no_generate=False,
-        module_info_dict=None):
+        no_generate=False):
         """Initialize the ModuleInfo object.
 
         Load up the module-info.json file and initialize the helper vars.
@@ -132,18 +148,6 @@ class ModuleInfo:
         if no_generate:
             self.name_to_module_info = {}
             return
-        if module_file:
-            self.mod_info_file_path = Path(module_file)
-            self.name_to_module_info = atest_utils.load_json_safely(module_file)
-            _add_missing_variant_modules(self.name_to_module_info)
-            self.path_to_module_info = get_path_to_module_info(
-                self.name_to_module_info)
-            return
-        if module_info_dict:
-            _add_missing_variant_modules(module_info_dict)
-            self.name_to_module_info = module_info_dict
-            self.path_to_module_info = get_path_to_module_info(module_info_dict)
-            return
 
         module_info_target, name_to_module_info = self._load_module_info_file(
             module_file)
@@ -158,34 +162,6 @@ class ModuleInfo:
                 self.module_index_proc = atest_utils.run_multi_proc(
                     func=self._get_testable_modules,
                     kwargs={'index': True})
-
-    @staticmethod
-    def _discover_mod_file_and_target(force_build):
-        """Find the module file.
-
-        Args:
-            force_build: Boolean to indicate if we should rebuild the
-                         module_info file regardless of the existence of it.
-
-        Returns:
-            Tuple of module_info_target and path to the module-info.json.
-        """
-        logging.debug('Probing and validating module info...')
-        root_dir = Path(os.getenv(constants.ANDROID_BUILD_TOP))
-        out_dir = Path(os.getenv(constants.ANDROID_PRODUCT_OUT))
-        module_file_path = out_dir.joinpath(_MODULE_INFO)
-
-        # If OUT_DIR/OUT_DIR_COMMON_BASE was set outside of the root_dir, use
-        # absolute path; otherwise use relative path as the target name.
-        if out_dir.is_relative_to(root_dir):
-            module_info_target = str(module_file_path.relative_to(root_dir))
-        else:
-            logging.debug('User customized out dir!')
-            module_file_path = out_dir.joinpath(_MODULE_INFO)
-            module_info_target = str(module_file_path)
-        if force_build or not module_file_path.is_file():
-            atest_utils.build_module_info_target(module_info_target)
-        return module_info_target, module_file_path
 
     def _load_module_info_file(self, module_file):
         """Load the module file.
@@ -224,7 +200,7 @@ class ModuleInfo:
         module_info_target = None
         file_path = module_file
         if not file_path:
-            module_info_target, file_path = self._discover_mod_file_and_target(
+            module_info_target, file_path = _discover_mod_file_and_target(
                 self.force_build)
             self.mod_info_file_path = Path(file_path)
         # Even undergone a rebuild after _discover_mod_file_and_target(), merge
@@ -1066,6 +1042,33 @@ def merge_soong_info(name_to_module_info, mod_bp_infos):
             name_to_module_info[
                 module_name][merge_item] = mod_info_values
     return name_to_module_info
+
+
+def _discover_mod_file_and_target(force_build):
+    """Find the module file.
+
+    Args:
+        force_build: Boolean to indicate if we should rebuild the
+                     module_info file regardless of the existence of it.
+
+    Returns:
+        Tuple of module_info_target and path to the module-info.json.
+    """
+    logging.debug('Probing and validating module info...')
+    root_dir = Path(os.getenv(constants.ANDROID_BUILD_TOP))
+    out_dir = Path(os.getenv(constants.ANDROID_PRODUCT_OUT))
+    module_file_path = out_dir.joinpath(_MODULE_INFO)
+    # If OUT_DIR/OUT_DIR_COMMON_BASE was set outside of the root_dir, use
+    # absolute path; otherwise use relative path as the target name.
+    if out_dir.is_relative_to(root_dir):
+        module_info_target = str(module_file_path.relative_to(root_dir))
+    else:
+        logging.debug('User customized out dir!')
+        module_file_path = out_dir.joinpath(_MODULE_INFO)
+        module_info_target = str(module_file_path)
+    if force_build or not module_file_path.is_file():
+        atest_utils.build_module_info_target(module_info_target)
+    return module_info_target, module_file_path
 
 
 def _add_missing_variant_modules(name_to_module_info: Dict[str, Module]):
