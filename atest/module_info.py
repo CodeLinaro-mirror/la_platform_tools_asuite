@@ -78,64 +78,10 @@ def create_empty() -> ModuleInfo:
     return ModuleInfo(no_generate=True)
 
 
-class ModuleInfo:
-    """Class that offers fast/easy lookup for Module related details."""
+class Loader:
+    """Class that handles load and merge processes."""
 
-    def __init__(
-        self,
-        force_build=False,
-        module_file=None,
-        no_generate=False):
-        """Initialize the ModuleInfo object.
-
-        Load up the module-info.json file and initialize the helper vars.
-        Note that module-info.json does not contain all module dependencies,
-        therefore, Atest needs to accumulate dependencies defined in bp files.
-
-          +----------------------+     +----------------------------+
-          | $ANDROID_PRODUCT_OUT |     |$ANDROID_BUILD_TOP/out/soong|
-          |  /module-info.json   |     |  /module_bp_java_deps.json |
-          +-----------+----------+     +-------------+--------------+
-                      |     _merge_soong_info()      |
-                      +------------------------------+
-                      |
-                      v
-        +----------------------------+  +----------------------------+
-        |tempfile.NamedTemporaryFile |  |$ANDROID_BUILD_TOP/out/soong|
-        +-------------+--------------+  |  /module_bp_cc_deps.json   |
-                      |                 +-------------+--------------+
-                      |     _merge_soong_info()       |
-                      +-------------------------------+
-                                     |
-                             +-------|
-                             v
-                +============================+
-                |  $ANDROID_PRODUCT_OUT      |
-                |    /atest_merged_dep.json  |--> load as module info.
-                +============================+
-
-        Args:
-            force_build: Boolean to indicate if we should rebuild the
-                         module_info file regardless if it's created or not.
-            module_file: String of path to file to load up. Used for testing.
-            no_generate: Boolean to indicate if we should populate module info
-                         from the soong artifacts; setting to true will
-                         leave module info empty.
-        """
-        self.root_dir = os.environ.get(constants.ANDROID_BUILD_TOP)
-        # force_build could be from "-m" or smart_build(build files change).
-        self.force_build = force_build
-        # update_merge_info flag will merge dep files only when any of them have
-        # changed even force_build == True.
-        self.update_merge_info = False
-        self.roboleaf_tests = {}
-
-        # Index and checksum files that will be used.
-        index_dir = Path(os.getenv(constants.ANDROID_HOST_OUT, '')).joinpath('indexes')
-        self.module_index = index_dir.joinpath(constants.MODULE_INDEX)
-        self.module_index_proc = None
-
-        # Paths to java, cc and merged module info json files.
+    def __init__(self, module_file=None, force_build: bool = False):
         self.java_dep_path = Path(
             atest_utils.get_build_out_dir()).joinpath('soong', _JAVA_DEP_INFO)
         self.cc_dep_path = Path(
@@ -144,26 +90,13 @@ class ModuleInfo:
             os.getenv(constants.ANDROID_PRODUCT_OUT, '')).joinpath(_MERGED_INFO)
 
         self.mod_info_file_path = Path(module_file) if module_file else None
+        # update_merge_info flag will merge dep files only when any of them have
+        # changed even force_build == True.
+        self.update_merge_info = False
+        # force_build could be from "-m" or smart_build(build files change).
+        self.force_build = force_build
 
-        if no_generate:
-            self.name_to_module_info = {}
-            return
-
-        module_info_target, name_to_module_info = self._load_module_info_file(
-            module_file)
-        self.name_to_module_info = name_to_module_info
-        self.module_info_target = module_info_target
-        self.path_to_module_info = get_path_to_module_info(
-            self.name_to_module_info)
-        if self.update_merge_info or not self.module_index.is_file():
-            # Assumably null module_file reflects a common run, and index testable
-            # modules only when common runs.
-            if not module_file:
-                self.module_index_proc = atest_utils.run_multi_proc(
-                    func=self._get_testable_modules,
-                    kwargs={'index': True})
-
-    def _load_module_info_file(self, module_file):
+    def load_module_info_file(self, module_file):
         """Load the module file.
 
         No matter whether passing module_file or not, ModuleInfo will load
@@ -210,7 +143,7 @@ class ModuleInfo:
         start = time.time()
         if self.update_merge_info:
             # Load the $ANDROID_PRODUCT_OUT/module-info.json for merging.
-            module_info_json = atest_utils.load_json_safely(file_path)
+            module_info_json = atest_utils.load_json_safely(self.mod_info_file_path)
             mod_info = self._merge_build_system_infos(module_info_json)
             duration = time.time() - start
             logging.debug('Merging module info took %ss', duration)
@@ -248,6 +181,194 @@ class ModuleInfo:
         timestamp_file = dirname.joinpath('modules.stp')
         with open(timestamp_file, 'w', encoding='utf8') as _file:
             json.dump(timestamp, _file)
+
+    def need_merge_module_info(self):
+        """Check if need to merge module info json files.
+
+        There are 2 scienarios that atest_merged_dep.json will be updated.
+        1. One of the checksum of module-info.json, module_bp_java_deps.json and
+           module_cc_java_deps.json have changed.
+        2. atest_merged_deps.json does not exist.
+
+        If fits one of above scienarios, it is recognized to update.
+
+        Returns:
+            True if one of the scienarios reaches, False otherwise.
+        """
+        if not self.merged_dep_path.is_file():
+            return True
+
+        timestamp_file = atest_utils.get_host_out('indexes/modules.stp')
+        data = atest_utils.load_json_safely(timestamp_file)
+        for f in [self.mod_info_file_path,
+                  self.java_dep_path,
+                  self.cc_dep_path]:
+            if f.stat().st_mtime != data.get(str(f), ''):
+                return True
+        return False
+
+    def _merge_build_system_infos(self, name_to_module_info,
+        java_bp_info_path=None, cc_bp_info_path=None):
+        """Merge the content of module-info.json and CC/Java dependency files
+        to name_to_module_info.
+
+        Args:
+            name_to_module_info: Dict of module name to module info dict.
+            java_bp_info_path: String of path to java dep file to load up.
+                               Used for testing.
+            cc_bp_info_path: String of path to cc dep file to load up.
+                             Used for testing.
+
+        Returns:
+            Dict of updated name_to_module_info.
+        """
+        # Merge _JAVA_DEP_INFO
+        if not java_bp_info_path:
+            java_bp_info_path = self.java_dep_path
+        java_bp_infos = atest_utils.load_json_safely(java_bp_info_path)
+        if java_bp_infos:
+            logging.debug('Merging Java build info: %s', java_bp_info_path)
+            name_to_module_info = merge_soong_info(
+                name_to_module_info, java_bp_infos)
+        # Merge _CC_DEP_INFO
+        if not cc_bp_info_path:
+            cc_bp_info_path = self.cc_dep_path
+        cc_bp_infos = atest_utils.load_json_safely(cc_bp_info_path)
+        if cc_bp_infos:
+            logging.debug('Merging CC build info: %s', cc_bp_info_path)
+            # CC's dep json format is different with java.
+            # Below is the example content:
+            # {
+            #   "clang": "${ANDROID_ROOT}/bin/clang",
+            #   "clang++": "${ANDROID_ROOT}/bin/clang++",
+            #   "modules": {
+            #       "ACameraNdkVendorTest": {
+            #           "path": [
+            #                   "frameworks/av/camera/ndk"
+            #           ],
+            #           "srcs": [
+            #                   "frameworks/tests/AImageVendorTest.cpp",
+            #                   "frameworks/tests/ACameraManagerTest.cpp"
+            #           ],
+            name_to_module_info = merge_soong_info(
+                name_to_module_info, cc_bp_infos.get('modules', {}))
+        # If $ANDROID_PRODUCT_OUT was not created in pyfakefs, simply return it
+        # without dumping atest_merged_dep.json in real.
+
+        # Adds the key into module info as a unique ID.
+        for key, info in name_to_module_info.items():
+            info[constants.MODULE_INFO_ID] = key
+
+        if not self.merged_dep_path.parent.is_dir():
+            return name_to_module_info
+        # b/178559543 saving merged module info in a temp file and copying it to
+        # atest_merged_dep.json can eliminate the possibility of accessing it
+        # concurrently and resulting in invalid JSON format.
+        with tempfile.NamedTemporaryFile() as temp_file:
+            with open(temp_file.name, 'w', encoding='utf-8') as _temp:
+                json.dump(name_to_module_info, _temp, indent=0)
+            shutil.copy(temp_file.name, self.merged_dep_path)
+        return name_to_module_info
+
+
+class ModuleInfo:
+    """Class that offers fast/easy lookup for Module related details."""
+
+    def __init__(
+        self,
+        force_build=False,
+        module_file=None,
+        no_generate=False):
+        """Initialize the ModuleInfo object.
+
+        Load up the module-info.json file and initialize the helper vars.
+        Note that module-info.json does not contain all module dependencies,
+        therefore, Atest needs to accumulate dependencies defined in bp files.
+
+          +----------------------+     +----------------------------+
+          | $ANDROID_PRODUCT_OUT |     |$ANDROID_BUILD_TOP/out/soong|
+          |  /module-info.json   |     |  /module_bp_java_deps.json |
+          +-----------+----------+     +-------------+--------------+
+                      |     _merge_soong_info()      |
+                      +------------------------------+
+                      |
+                      v
+        +----------------------------+  +----------------------------+
+        |tempfile.NamedTemporaryFile |  |$ANDROID_BUILD_TOP/out/soong|
+        +-------------+--------------+  |  /module_bp_cc_deps.json   |
+                      |                 +-------------+--------------+
+                      |     _merge_soong_info()       |
+                      +-------------------------------+
+                                     |
+                             +-------|
+                             v
+                +============================+
+                |  $ANDROID_PRODUCT_OUT      |
+                |    /atest_merged_dep.json  |--> load as module info.
+                +============================+
+
+        Args:
+            force_build: Boolean to indicate if we should rebuild the
+                         module_info file regardless if it's created or not.
+            module_file: String of path to file to load up. Used for testing.
+            no_generate: Boolean to indicate if we should populate module info
+                         from the soong artifacts; setting to true will
+                         leave module info empty.
+        """
+        self.root_dir = os.environ.get(constants.ANDROID_BUILD_TOP)
+        self.roboleaf_tests = {}
+
+        # Index and checksum files that will be used.
+        index_dir = Path(os.getenv(constants.ANDROID_HOST_OUT, '')).joinpath('indexes')
+        self.module_index = index_dir.joinpath(constants.MODULE_INDEX)
+        self.module_index_proc = None
+
+        self.loader = Loader(
+            module_file=module_file,
+            force_build=force_build,
+        )
+
+        if no_generate:
+            self.name_to_module_info = {}
+            return
+
+        module_info_target, name_to_module_info = self.loader.load_module_info_file(
+            module_file)
+        self.name_to_module_info = name_to_module_info
+        self.module_info_target = module_info_target
+        self.path_to_module_info = get_path_to_module_info(
+            self.name_to_module_info)
+        if self.loader.update_merge_info or not self.module_index.is_file():
+            # Assumably null module_file reflects a common run, and index testable
+            # modules only when common runs.
+            if not module_file:
+                self.module_index_proc = atest_utils.run_multi_proc(
+                    func=self._get_testable_modules,
+                    kwargs={'index': True})
+
+    @property
+    def mod_info_file_path(self):
+        return self.loader.mod_info_file_path
+
+    @mod_info_file_path.setter
+    def mod_info_file_path(self, value):
+        self.loader.mod_info_file_path = value
+
+    @property
+    def java_dep_path(self):
+        return self.loader.java_dep_path
+
+    @property
+    def cc_dep_path(self):
+        return self.loader.cc_dep_path
+
+    @property
+    def merged_dep_path(self):
+        return self.loader.merged_dep_path
+
+    def _save_module_info_timestamp(self):
+        """Caller of the same method in Loader class."""
+        return self.loader._save_module_info_timestamp()
 
     def _index_testable_modules(self, content):
         """Dump testable modules.
@@ -729,66 +850,12 @@ class ModuleInfo:
 
     def _merge_build_system_infos(self, name_to_module_info,
         java_bp_info_path=None, cc_bp_info_path=None):
-        """Merge the content of module-info.json and CC/Java dependency files
-        to name_to_module_info.
-
-        Args:
-            name_to_module_info: Dict of module name to module info dict.
-            java_bp_info_path: String of path to java dep file to load up.
-                               Used for testing.
-            cc_bp_info_path: String of path to cc dep file to load up.
-                             Used for testing.
-
-        Returns:
-            Dict of updated name_to_module_info.
-        """
-        # Merge _JAVA_DEP_INFO
-        if not java_bp_info_path:
-            java_bp_info_path = self.java_dep_path
-        java_bp_infos = atest_utils.load_json_safely(java_bp_info_path)
-        if java_bp_infos:
-            logging.debug('Merging Java build info: %s', java_bp_info_path)
-            name_to_module_info = merge_soong_info(
-                name_to_module_info, java_bp_infos)
-        # Merge _CC_DEP_INFO
-        if not cc_bp_info_path:
-            cc_bp_info_path = self.cc_dep_path
-        cc_bp_infos = atest_utils.load_json_safely(cc_bp_info_path)
-        if cc_bp_infos:
-            logging.debug('Merging CC build info: %s', cc_bp_info_path)
-            # CC's dep json format is different with java.
-            # Below is the example content:
-            # {
-            #   "clang": "${ANDROID_ROOT}/bin/clang",
-            #   "clang++": "${ANDROID_ROOT}/bin/clang++",
-            #   "modules": {
-            #       "ACameraNdkVendorTest": {
-            #           "path": [
-            #                   "frameworks/av/camera/ndk"
-            #           ],
-            #           "srcs": [
-            #                   "frameworks/tests/AImageVendorTest.cpp",
-            #                   "frameworks/tests/ACameraManagerTest.cpp"
-            #           ],
-            name_to_module_info = merge_soong_info(
-                name_to_module_info, cc_bp_infos.get('modules', {}))
-        # If $ANDROID_PRODUCT_OUT was not created in pyfakefs, simply return it
-        # without dumping atest_merged_dep.json in real.
-
-        # Adds the key into module info as a unique ID.
-        for key, info in name_to_module_info.items():
-            info[constants.MODULE_INFO_ID] = key
-
-        if not self.merged_dep_path.parent.is_dir():
-            return name_to_module_info
-        # b/178559543 saving merged module info in a temp file and copying it to
-        # atest_merged_dep.json can eliminate the possibility of accessing it
-        # concurrently and resulting in invalid JSON format.
-        with tempfile.NamedTemporaryFile() as temp_file:
-            with open(temp_file.name, 'w', encoding='utf-8') as _temp:
-                json.dump(name_to_module_info, _temp, indent=0)
-            shutil.copy(temp_file.name, self.merged_dep_path)
-        return name_to_module_info
+        """Caller of the same method in Loader class."""
+        return self.loader._merge_build_system_infos(
+            name_to_module_info,
+            java_bp_info_path,
+            cc_bp_info_path,
+        )
 
     def get_filepath_from_module(self, module_name: str, filename: str) -> Path:
         """Return absolute path of the given module and filename."""
@@ -844,31 +911,6 @@ class ModuleInfo:
         logging.debug('modules %s required by %s were not installed',
                       install_deps, module_name)
         return install_deps
-
-    def need_merge_module_info(self):
-        """Check if need to merge module info json files.
-
-        There are 2 scienarios that atest_merged_dep.json will be updated.
-        1. One of the checksum of module-info.json, module_bp_java_deps.json and
-           module_cc_java_deps.json have changed.
-        2. atest_merged_deps.json does not exist.
-
-        If fits one of above scienarios, it is recognized to update.
-
-        Returns:
-            True if one of the scienarios reaches, False otherwise.
-        """
-        if not self.merged_dep_path.is_file():
-            return True
-
-        timestamp_file = atest_utils.get_host_out('indexes/modules.stp')
-        data = atest_utils.load_json_safely(timestamp_file)
-        for f in [self.mod_info_file_path,
-                  self.java_dep_path,
-                  self.cc_dep_path]:
-            if f.stat().st_mtime != data.get(str(f), ''):
-                return True
-        return False
 
     def is_unit_test(self, mod_info):
         """Return True if input module is unit test, False otherwise.
