@@ -89,6 +89,7 @@ public final class BazelTestTest {
     private ILogSaverListener mMockListener;
     private TestInformation mTestInfo;
     private Path mBazelTempPath;
+    private Path mWorkspaceArchivePath;
 
     private static final String BAZEL_TEST_TARGETS_OPTION = "bazel-test-target-patterns";
     private static final String BEP_FILE_OPTION_NAME = "--build_event_binary_file";
@@ -105,6 +106,11 @@ public final class BazelTestTest {
         mTestInfo = TestInformation.newBuilder().setInvocationContext(context).build();
         mBazelTempPath =
                 Files.createDirectory(tempDir.getRoot().toPath().resolve("bazel_temp_dir"));
+        Files.createDirectories(
+                tempDir.getRoot()
+                        .toPath()
+                        .resolve("bazel_suite_root/android-bazel-suite/out/atest_bazel_workspace"));
+        mWorkspaceArchivePath = tempDir.getRoot().toPath().resolve("bazel_suite_root");
     }
 
     @Test
@@ -146,7 +152,7 @@ public final class BazelTestTest {
                 .testLog(contains(String.format("%s-log", BazelTest.RUN_TESTS)), any(), any());
     }
 
-   /*@Test
+    @Test
     public void runSucceeds_testLogsReportedUnderModule() throws Exception {
         BazelTest bazelTest = newBazelTest();
 
@@ -159,7 +165,7 @@ public final class BazelTestTest {
         inOrder.verify(mMockListener)
                 .testLog(eq("tf-test-process-invocation-log"), eq(LogDataType.XML), any());
         inOrder.verify(mMockListener).testModuleEnded();
-    }*/
+    }
 
     @Test
     public void malformedProtoResults_runFails() throws Exception {
@@ -523,6 +529,44 @@ public final class BazelTestTest {
         verify(mMockListener, never()).testStarted(any(), anyLong());
     }
 
+    @Test
+    public void bazelQuery_default() throws Exception {
+        List<String> command = new ArrayList<>();
+        FakeProcessStarter processStarter = newFakeProcessStarter();
+        processStarter.put(
+                BazelTest.QUERY_ALL_TARGETS,
+                builder -> {
+                    command.addAll(builder.command());
+                    return newPassingProcessWithStdout("unused");
+                });
+
+        BazelTest bazelTest = newBazelTestWithProcessStarter(processStarter);
+
+        bazelTest.run(mTestInfo, mMockListener);
+        assertThat(command).contains("kind(tradefed_deviceless_test, tests(//...))");
+    }
+
+    @Test
+    public void bazelQuery_optionOverride() throws Exception {
+        List<String> command = new ArrayList<>();
+        FakeProcessStarter processStarter = newFakeProcessStarter();
+        processStarter.put(
+                BazelTest.QUERY_ALL_TARGETS,
+                builder -> {
+                    command.addAll(builder.command());
+                    return newPassingProcessWithStdout("unused");
+                });
+
+        BazelTest bazelTest = newBazelTestWithProcessStarter(processStarter);
+        OptionSetter setter = new OptionSetter(bazelTest);
+        setter.setOptionValue("bazel-query", "tests(//vendor/...)");
+
+        bazelTest.run(mTestInfo, mMockListener);
+        assertThat(command).contains("tests(//vendor/...)");
+        // Default should be overridden and not appear in command
+        assertThat(command).doesNotContain("kind(tradefed_deviceless_test");
+    }
+
     private static byte[] logFileContents() {
         // Seed Random to always get the same sequence of values.
         Random rand = new Random(RANDOM_SEED);
@@ -579,7 +623,7 @@ public final class BazelTestTest {
 
     private Properties bazelTestProperties() {
         Properties properties = new Properties();
-        properties.put("BAZEL_SUITE_ROOT", "/phony/path/to/bazel/test/suite");
+        properties.put("BAZEL_SUITE_ROOT", mWorkspaceArchivePath.toAbsolutePath().toString());
         properties.put("java.io.tmpdir", mBazelTempPath.toAbsolutePath().toString());
 
         return properties;
@@ -753,7 +797,11 @@ public final class BazelTestTest {
             Path outputFile = outputsDir.resolve("proto-results");
             setter.setOptionValue("proto-output-file", outputFile.toAbsolutePath().toString());
 
-            Path logDir = Files.createDirectories(outputsDir.resolve("stub/-1/stub"));
+            Path logDir =
+                    Files.createDirectories(
+                            outputsDir
+                                    .resolve(BazelTest.BUILD_TEST_ARG)
+                                    .resolve(BazelTest.TEST_TAG_TEST_ARG));
             Path isolatedJavaLog = createLogFile("isolated-java-logs.tar.gz", logDir);
             Path tfConfig = createLogFile("tradefed-expanded-config.xml", logDir);
 
