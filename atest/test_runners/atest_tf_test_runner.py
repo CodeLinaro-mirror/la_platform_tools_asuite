@@ -554,7 +554,9 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
 
         unsupported = set()
         for t_info in test_infos:
-            if t_info.test_finder in ['INTEGRATION', 'INTEGRATION_FILE_PATH']:
+            if t_info.test_finder in ['CONFIG',
+                                      'INTEGRATION',
+                                      'INTEGRATION_FILE_PATH']:
                 unsupported.add(t_info.test_name)
 
         if not unsupported:
@@ -1491,6 +1493,7 @@ class DeviceTest(Test):
             Target('adb', Variant.HOST),
             Target('aapt', Variant.HOST),
             Target('aapt2', Variant.HOST),
+            Target('compatibility-host-util', Variant.HOST),
         ]))
 
         # Auto-generated Java tests use a module template that uses the Dalvik

@@ -108,7 +108,7 @@ class ModuleInfoUnittests(unittest.TestCase):
     # TODO: (b/264015241) Stop mocking build variables.
     # TODO: (b/263199608) Re-write the test after refactoring module-info.py
     @mock.patch('pathlib.Path.is_file', return_value=True)
-    @mock.patch.object(module_info.ModuleInfo, 'need_merge_module_info')
+    @mock.patch.object(module_info.Loader, 'need_merge_module_info')
     @mock.patch('json.load', return_value={})
     @mock.patch('builtins.open', new_callable=mock.mock_open)
     @mock.patch('os.path.isfile', return_value=True)
@@ -124,7 +124,7 @@ class ModuleInfoUnittests(unittest.TestCase):
         default_out_dir_mod_targ = 'out/dir/here/module-info.json'
         # Make sure module_info_target is what we think it is.
         with mock.patch.dict('os.environ', os_environ_mock, clear=True):
-            mod_info = module_info.ModuleInfo()
+            mod_info = module_info.load_from_file()
             self.assertEqual(default_out_dir_mod_targ,
                              mod_info.module_info_target)
 
@@ -135,7 +135,7 @@ class ModuleInfoUnittests(unittest.TestCase):
         custom_out_dir_mod_targ = 'out2/dir/here/module-info.json'
         # Make sure module_info_target is what we think it is.
         with mock.patch.dict('os.environ', os_environ_mock, clear=True):
-            mod_info = module_info.ModuleInfo()
+            mod_info = module_info.load_from_file()
             self.assertEqual(custom_out_dir_mod_targ,
                              mod_info.module_info_target)
 
@@ -146,11 +146,11 @@ class ModuleInfoUnittests(unittest.TestCase):
         custom_abs_out_dir_mod_targ = '/tmp/out/dir/module-info.json'
         # Make sure module_info_target is what we think it is.
         with mock.patch.dict('os.environ', os_environ_mock, clear=True):
-            mod_info = module_info.ModuleInfo()
+            mod_info = module_info.load_from_file()
             self.assertEqual(custom_abs_out_dir_mod_targ,
                              mod_info.module_info_target)
 
-    @mock.patch.object(module_info.ModuleInfo, '_load_module_info_file')
+    @mock.patch.object(module_info.Loader, 'load')
     def test_get_path_to_module_info(self, mock_load_module):
         """Test that we correctly create the path to module info dict."""
         mod_one = 'mod1'
@@ -221,7 +221,7 @@ class ModuleInfoUnittests(unittest.TestCase):
     @mock.patch.dict('os.environ', {constants.ANDROID_BUILD_TOP:'/',
                                     constants.ANDROID_PRODUCT_OUT:PRODUCT_OUT_DIR,
                                     constants.ANDROID_HOST_OUT:HOST_OUT_DIR})
-    @mock.patch.object(module_info.ModuleInfo, 'is_testable_module')
+    @mock.patch('atest.module_info._is_testable_module', return_value=True)
     @mock.patch.object(module_info.ModuleInfo, 'is_suite_in_compatibility_suites')
     def test_get_testable_modules(self, mock_is_suite_exist, mock_is_testable):
         """Test get_testable_modules."""
@@ -234,8 +234,7 @@ class ModuleInfoUnittests(unittest.TestCase):
         self.assertTrue(expected_modules.issubset(mod_info.get_testable_modules()))
 
         # 3. search modules by giving a suite name, run _get_testable_modules()
-        mod_info.name_to_module_info = NAME_TO_MODULE_INFO
-        mock_is_testable.return_value = True
+        mod_info = module_info.load_from_dict(name_to_module_info=NAME_TO_MODULE_INFO)
         mock_is_suite_exist.return_value = True
         self.assertEqual(1, len(mod_info.get_testable_modules('test_suite')))
         mock_is_suite_exist.return_value = False
@@ -288,12 +287,12 @@ class ModuleInfoUnittests(unittest.TestCase):
 
     def test_merge_build_system_infos(self):
         """Test _merge_build_system_infos."""
-        mod_info = module_info.load_from_file(module_file=JSON_FILE_PATH)
+        loader = module_info.Loader(module_file=JSON_FILE_PATH)
         mod_info_1 = {constants.MODULE_NAME: 'module_1',
                       constants.MODULE_DEPENDENCIES: []}
         name_to_mod_info = {'module_1' : mod_info_1}
         expect_deps = ['test_dep_level_1_1', 'test_dep_level_1_2']
-        name_to_mod_info = mod_info._merge_build_system_infos(
+        name_to_mod_info = loader._merge_build_system_infos(
             name_to_mod_info, java_bp_info_path=self.java_dep_path)
         self.assertEqual(
             name_to_mod_info['module_1'].get(constants.MODULE_DEPENDENCIES),
@@ -301,8 +300,8 @@ class ModuleInfoUnittests(unittest.TestCase):
 
     def test_merge_build_system_infos_missing_keys(self):
         """Test _merge_build_system_infos for keys missing from module-info.json."""
-        mod_info = module_info.load_from_file(module_file=JSON_FILE_PATH)
-        name_to_mod_info = mod_info._merge_build_system_infos(
+        loader = module_info.Loader(module_file=JSON_FILE_PATH)
+        name_to_mod_info = loader._merge_build_system_infos(
             {}, java_bp_info_path=self.java_dep_path)
 
         expect_deps = ['test_dep_level_1_1']
@@ -312,12 +311,12 @@ class ModuleInfoUnittests(unittest.TestCase):
 
     def test_merge_dependency_with_ori_dependency(self):
         """Test _merge_dependency."""
-        mod_info = module_info.load_from_file(module_file=JSON_FILE_PATH)
+        loader = module_info.Loader(module_file=JSON_FILE_PATH)
         mod_info_1 = {constants.MODULE_NAME: 'module_1',
                       constants.MODULE_DEPENDENCIES: ['ori_dep_1']}
         name_to_mod_info = {'module_1' : mod_info_1}
         expect_deps = ['ori_dep_1', 'test_dep_level_1_1', 'test_dep_level_1_2']
-        name_to_mod_info = mod_info._merge_build_system_infos(
+        name_to_mod_info = loader._merge_build_system_infos(
             name_to_mod_info, java_bp_info_path=self.java_dep_path)
         self.assertEqual(
             name_to_mod_info['module_1'].get(constants.MODULE_DEPENDENCIES),
@@ -392,34 +391,37 @@ class ModuleInfoUnittests(unittest.TestCase):
 
     def test_get_module_dependency(self):
         """Test get_module_dependency."""
-        mod_info = module_info.load_from_file(module_file=JSON_FILE_PATH)
+        loader = module_info.Loader(module_file=JSON_FILE_PATH)
+        mod_info = loader.load()
         expect_deps = {'test_dep_level_1_1', 'module_1', 'test_dep_level_1_2',
                        'test_dep_level_2_2', 'test_dep_level_2_1', 'module_2'}
-        mod_info._merge_build_system_infos(mod_info.name_to_module_info,
-                                   java_bp_info_path=self.java_dep_path)
+        loader._merge_build_system_infos(
+            loader.name_to_module_info, java_bp_info_path=self.java_dep_path)
         self.assertEqual(
             mod_info.get_module_dependency('dep_test_module'),
             expect_deps)
 
     def test_get_module_dependency_w_loop(self):
         """Test get_module_dependency with problem dep file."""
-        mod_info = module_info.load_from_file(module_file=JSON_FILE_PATH)
+        loader = module_info.Loader(module_file=JSON_FILE_PATH)
+        mod_info = loader.load()
         # Java dependency file with a endless loop define.
         java_dep_file = os.path.join(uc.TEST_DATA_DIR,
                                      'module_bp_java_loop_deps.json')
         expect_deps = {'test_dep_level_1_1', 'module_1', 'test_dep_level_1_2',
                        'test_dep_level_2_2', 'test_dep_level_2_1', 'module_2'}
-        mod_info._merge_build_system_infos(mod_info.name_to_module_info,
-                                   java_bp_info_path=java_dep_file)
+        loader._merge_build_system_infos(
+            loader.name_to_module_info, java_bp_info_path=java_dep_file)
         self.assertEqual(
             mod_info.get_module_dependency('dep_test_module'),
             expect_deps)
 
     def test_get_install_module_dependency(self):
         """Test get_install_module_dependency."""
-        mod_info = module_info.load_from_file(module_file=JSON_FILE_PATH)
+        loader = module_info.Loader(module_file=JSON_FILE_PATH)
+        mod_info = loader.load()
         expect_deps = {'module_1', 'test_dep_level_2_1'}
-        mod_info._merge_build_system_infos(mod_info.name_to_module_info,
+        loader._merge_build_system_infos(loader.name_to_module_info,
                                            java_bp_info_path=self.java_dep_path)
         self.assertEqual(
             mod_info.get_install_module_dependency('dep_test_module'),
@@ -427,12 +429,12 @@ class ModuleInfoUnittests(unittest.TestCase):
 
     def test_cc_merge_build_system_infos(self):
         """Test _merge_build_system_infos for cc."""
-        mod_info = module_info.load_from_file(module_file=JSON_FILE_PATH)
+        loader = module_info.Loader(module_file=JSON_FILE_PATH)
         mod_info_1 = {constants.MODULE_NAME: 'module_cc_1',
                       constants.MODULE_DEPENDENCIES: []}
         name_to_mod_info = {'module_cc_1' : mod_info_1}
         expect_deps = ['test_cc_dep_level_1_1', 'test_cc_dep_level_1_2']
-        name_to_mod_info = mod_info._merge_build_system_infos(
+        name_to_mod_info = loader._merge_build_system_infos(
             name_to_mod_info, cc_bp_info_path=self.cc_dep_path)
         self.assertEqual(
             name_to_mod_info['module_cc_1'].get(constants.MODULE_DEPENDENCIES),
@@ -633,13 +635,15 @@ class ModuleInfoUnittests(unittest.TestCase):
         self.assertEqual(mod_info.get_installed_paths('my_module'),
                          [Path('/a/b/c/d')])
 
+    @mock.patch.dict('os.environ',
+                     {constants.ANDROID_BUILD_TOP:'/mocked/build_top'})
     def test_get_installed_paths_have_relative_path(self):
         mod_info = create_module_info(
             [module(name='my_module',
                     installed=['a/b/c/d'])])
 
         self.assertEqual(mod_info.get_installed_paths('my_module'),
-                         [Path('/a/b/c/d')])
+                         [Path('/mocked/build_top/a/b/c/d')])
 
 
 class ModuleInfoTestFixture(fake_filesystem_unittest.TestCase):
