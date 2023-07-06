@@ -174,6 +174,10 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
         self._minimal_build = (
             (lambda: atest_configs.GLOBAL_ARGS.minimal_build is True)
             if minimal_build is None else lambda: minimal_build)
+        logging.debug('Enable minimal build: %s' % self._minimal_build())
+        metrics.LocalDetectEvent(
+            detect_type=DetectType.IS_MINIMAL_BUILD,
+            result=int(self._minimal_build()))
 
     def _get_ld_library_path(self) -> str:
         """Get the corresponding LD_LIBRARY_PATH string for running TF.
@@ -460,7 +464,7 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
             A dict modified from os.getenv.copy().
         """
         env_vars = os.environ.copy()
-        if constants.TF_GLOBAL_CONFIG:
+        if constants.TF_GLOBAL_CONFIG and is_log_upload_enabled(extra_args):
             env_vars["TF_GLOBAL_CONFIG"] = constants.TF_GLOBAL_CONFIG
         debug_port = extra_args.get(constants.TF_DEBUG, '')
         if debug_port:
@@ -543,6 +547,26 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
         root_dir = os.environ.get(constants.ANDROID_BUILD_TOP, '')
         return os.path.commonprefix([output, root_dir]) != root_dir
 
+    def _use_minimal_build(self, test_infos: List[test_info.TestInfo]) -> bool:
+
+        if not self._minimal_build():
+            return False
+
+        unsupported = set()
+        for t_info in test_infos:
+            if t_info.test_finder in ['CONFIG',
+                                      'INTEGRATION',
+                                      'INTEGRATION_FILE_PATH']:
+                unsupported.add(t_info.test_name)
+
+        if not unsupported:
+            return True
+
+        logging.warn(
+            'Minimal build was disabled because the following tests do not support it: %s',
+            unsupported)
+        return False
+
     def get_test_runner_build_reqs(
         self, test_infos: List[test_info.TestInfo]) -> Set[str]:
         """Return the build requirements.
@@ -553,7 +577,7 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
         Returns:
             Set of build targets.
         """
-        if self._minimal_build():
+        if self._use_minimal_build(test_infos):
             return self._get_test_runner_reqs_minimal(test_infos)
 
         return self._get_test_runner_build_reqs_maximal(test_infos)
@@ -784,7 +808,9 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
         # Only need to check one TestInfo to determine if the tests are
         # configured in TEST_MAPPING.
         for_test_mapping = test_infos and test_infos[0].from_test_mapping
-        test_args.extend(atest_utils.get_result_server_args(for_test_mapping))
+        if is_log_upload_enabled(extra_args):
+            test_args.extend(
+                atest_utils.get_result_server_args(for_test_mapping))
         self.run_cmd_dict['args'] = ' '.join(test_args)
         self.run_cmd_dict['tf_customize_template'] = (
             self._extract_customize_tf_templates(extra_args, test_infos))
