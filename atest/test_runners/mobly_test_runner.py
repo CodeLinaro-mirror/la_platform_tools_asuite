@@ -22,7 +22,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import yaml
 
@@ -116,7 +116,7 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
 
     def run_tests(
             self, test_infos: List[test_info.TestInfo],
-            extra_args: dict[str, Any],
+            extra_args: Dict[str, Any],
             reporter: result_reporter.ResultReporter) -> int:
         """Runs the list of test_infos.
 
@@ -163,7 +163,7 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
         """Checks that host env has met requirements."""
 
     def get_test_runner_build_reqs(
-            self, test_infos: List[test_info.TestInfo]) -> set[str]:
+            self, test_infos: List[test_info.TestInfo]) -> Set[str]:
         """Returns a set of build targets required by the test runner."""
         build_targets = set()
         build_targets.update(test_runner_base.gather_build_targets(test_infos))
@@ -172,8 +172,8 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
     # pylint: disable=unused-argument
     def generate_run_commands(
             self, test_infos: List[test_info.TestInfo],
-            extra_args: dict[str, Any],
-            _port: Optional[int] = None) -> list[str]:
+            extra_args: Dict[str, Any],
+            _port: Optional[int] = None) -> List[str]:
         """Generates a list of run commands from TestInfos.
 
         Args:
@@ -293,7 +293,7 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
                     ['adb', '-s', serial, 'install', '-r', '-g', apk])
 
     def _get_mobly_command(self, py_executable: str, mobly_pkg: str,
-                           config_path: str) -> list[str]:
+                           config_path: str) -> List[str]:
         """Generates a single Mobly test command.
 
         Args:
@@ -371,7 +371,7 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
             tinfo: test_info.TestInfo,
             iteration_num: int,
             total_iterations: int
-    ) -> list[test_runner_base.TestResult]:
+    ) -> List[test_runner_base.TestResult]:
         """Parses the Mobly summary file into ATest TestResults.
 
         Args:
