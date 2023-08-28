@@ -257,7 +257,8 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
             os.chdir(os.path.abspath(os.getenv(constants.ANDROID_BUILD_TOP)))
             if os.getenv(trb.OLD_OUTPUT_ENV_VAR):
                 result = self.run_tests_raw(test_infos, extra_args, reporter)
-            result = self.run_tests_pretty(test_infos, extra_args, reporter)
+            else:
+                result = self.run_tests_pretty(test_infos, extra_args, reporter)
         except atest_error.DryRunVerificationError as e:
             atest_utils.colorful_print(str(e), constants.RED)
             return ExitCode.VERIFY_FAILURE
@@ -470,14 +471,16 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
         if debug_port:
             env_vars['TF_DEBUG'] = 'true'
             env_vars['TF_DEBUG_PORT'] = str(debug_port)
+
         filtered_paths = []
-        for path in str(env_vars['PYTHONPATH']).split(':'):
+        for path in str(env_vars.get('PYTHONPATH', '')).split(':'):
             # TODO (b/166216843) Remove the hacky PYTHON path workaround.
             if (str(path).startswith('/tmp/Soong.python_') and
                     str(path).find('googleapiclient') > 0):
                 continue
             filtered_paths.append(path)
-        env_vars['PYTHONPATH'] = ':'.join(filtered_paths)
+        if filtered_paths:
+            env_vars['PYTHONPATH'] = ':'.join(filtered_paths)
 
         # Use prebuilt aapt if there's no aapt under android system path which
         # is aligned with build system.
@@ -1328,6 +1331,9 @@ def extra_args_to_tf_args(
                 '--test-arg',
                 'com.android.tradefed.testtype.GTest:'
                 f'native-test-timeout:{arg_value}',
+                '--test-arg',
+                'com.android.compatibility.testtype.LibcoreTest:'
+                f'test-timeout:{arg_value}',
             ],
         constants.COVERAGE: coverage.tf_args,
     })

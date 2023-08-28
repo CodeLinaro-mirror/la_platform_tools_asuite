@@ -21,9 +21,8 @@ import os
 import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
-from typing import Any
+from typing import Any, Dict, List, Optional, Set
 
 import yaml
 
@@ -46,6 +45,9 @@ _ERROR_NO_TEST_SUMMARY = 'No Mobly test summary found.'
 _ERROR_INVALID_TEST_SUMMARY = (
     'Invalid Mobly test summary. Make sure that it contains a final "Summary" '
     'section.')
+
+# TODO(b/287136126): Use host python once compatibility issue is resolved.
+PYTHON_3_10 = 'python3.10'
 
 FILE_REQUIREMENTS_TXT = 'requirements.txt'
 FILE_SUFFIX_APK = '.apk'
@@ -87,8 +89,16 @@ MOBLY_RESULT_TO_STATUS = {
 class MoblyTestFiles:
     """Data class representing required files for a Mobly test."""
     mobly_pkg: str
-    requirements_txt: str | None
-    test_apks: list[str]
+    requirements_txt: Optional[str]
+    test_apks: List[str]
+
+
+@dataclasses.dataclass(frozen=True)
+class RerunOptions:
+    """Data class representing rerun options."""
+    iterations: int
+    rerun_until_failure: bool
+    retry_any_failure: bool
 
 
 class MoblyTestRunnerError(Exception):
@@ -102,13 +112,13 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
     EXECUTABLE: str = '.'
 
     # Temporary files and directories used by the runner.
-    _temppaths: list[str] = []
+    _temppaths: List[str] = []
 
     def run_tests(
-            self, test_infos: list[test_info.TestInfo],
-            extra_args: dict[str, Any],
+            self, test_infos: List[test_info.TestInfo],
+            extra_args: Dict[str, Any],
             reporter: result_reporter.ResultReporter) -> int:
-        """Run the list of test_infos.
+        """Runs the list of test_infos.
 
         Should contain code for kicking off the test runs using
         test_runner_base.run(). Results should be processed and printed
@@ -123,31 +133,28 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
             0 if tests succeed, non-zero otherwise.
         """
         ret_code = atest_enum.ExitCode.SUCCESS
+        iters = extra_args.get(constants.ITERATIONS, 1)
+        reruns = extra_args.get(constants.RERUN_UNTIL_FAILURE, 0)
+        retries = extra_args.get(constants.RETRY_ANY_FAILURE, 0)
+        rerun_options = RerunOptions(
+            max(iters, reruns, retries), bool(reruns), bool(retries))
+
         for tinfo in test_infos:
-            logging.debug('Running Mobly test %s.', tinfo.test_name)
             try:
                 # Pre-test setup
                 test_files = self._get_test_files(tinfo)
-                venv_executable = self._setup_python_virtualenv(
+                py_executable = self._setup_python_env(
                     test_files.requirements_txt)
-                serials = atest_configs.GLOBAL_ARGS.serial
+                serials = atest_configs.GLOBAL_ARGS.serial or []
                 if constants.DISABLE_INSTALL not in extra_args:
                     self._install_apks(test_files.test_apks, serials)
                 mobly_config = self._generate_mobly_config(serials)
 
                 # Generate command and run
                 mobly_command = self._get_mobly_command(
-                    venv_executable, test_files.mobly_pkg, mobly_config)
-                ret_code |= self._run_mobly_command(mobly_command)
-
-                # Process results from generated summary file
-                summary_file = os.path.join(self.results_dir, MOBLY_LOGS_DIR,
-                                            LOCAL_TESTBED, LATEST_DIR,
-                                            TEST_SUMMARY_YAML)
-                test_results = self._get_test_results_from_summary(
-                    summary_file, tinfo)
-                for test_result in test_results:
-                    reporter.process_test_result(test_result)
+                    py_executable, test_files.mobly_pkg, mobly_config)
+                ret_code |= self._run_and_handle_results(
+                    mobly_command, tinfo, reporter, rerun_options)
             finally:
                 self._cleanup()
         return ret_code
@@ -156,7 +163,7 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
         """Checks that host env has met requirements."""
 
     def get_test_runner_build_reqs(
-            self, test_infos: list[test_info.TestInfo]) -> set[str]:
+            self, test_infos: List[test_info.TestInfo]) -> Set[str]:
         """Returns a set of build targets required by the test runner."""
         build_targets = set()
         build_targets.update(test_runner_base.gather_build_targets(test_infos))
@@ -164,9 +171,10 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
 
     # pylint: disable=unused-argument
     def generate_run_commands(
-            self, test_infos: list[test_info.TestInfo],
-            extra_args: dict[str, Any], _port: int | None = None) -> list[str]:
-        """Generate a list of run commands from TestInfos.
+            self, test_infos: List[test_info.TestInfo],
+            extra_args: Dict[str, Any],
+            _port: Optional[int] = None) -> List[str]:
+        """Generates a list of run commands from TestInfos.
 
         Args:
             test_infos: A set of TestInfo instances.
@@ -180,7 +188,7 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
         return []
 
     def _get_test_files(self, tinfo: test_info.TestInfo) -> MoblyTestFiles:
-        """Get test resource files from a given TestInfo."""
+        """Gets test resource files from a given TestInfo."""
         mobly_pkg = None
         requirements_txt = None
         test_apks = []
@@ -203,8 +211,8 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
             raise MoblyTestRunnerError(_ERROR_NO_MOBLY_TEST_PKG)
         return MoblyTestFiles(mobly_pkg, requirements_txt, test_apks)
 
-    def _generate_mobly_config(self, serials: list[str] | None) -> str:
-        """Create a Mobly YAML config given the test parameters.
+    def _generate_mobly_config(self, serials: List[str]) -> str:
+        """Creates a Mobly YAML config given the test parameters.
 
         If --serial is specified, the test will use those specific devices,
         otherwise it will use all ADB-connected devices.
@@ -212,7 +220,7 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
         Also set the Mobly results dir to <atest_results>/mobly_logs.
 
         Args:
-            serials: List of device serials, or None.
+            serials: List of device serials.
 
         Returns:
             Path to the generated config.
@@ -235,33 +243,39 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
             json.dump(config, f)
         return config_path
 
-    def _setup_python_virtualenv(self, requirements_txt: str | None) -> str:
-        """Create a Python virtual environment and set up dependencies.
+    def _setup_python_env(
+        self, requirements_txt: Optional[str]) -> Optional[str]:
+        """Sets up the local Python environment.
+
+        If a requirements_txt file exists, creates a Python virtualenv and
+        install dependencies. Otherwise, run the Mobly test binary directly.
 
         Args:
             requirements_txt: Path to the requirements.txt file, where the PyPI
                 dependencies are declared. None if no such file exists.
 
         Returns:
-            Path to the virtualenv's Python executable.
+            The virtualenv executable, or None.
         """
+        if requirements_txt is None:
+            logging.debug('No requirements.txt file found. Running Mobly test '
+                          'package directly.')
+            return None
         venv_dir = tempfile.mkdtemp(prefix='venv_')
         logging.debug('Creating virtualenv at %s.', venv_dir)
-        subprocess.check_call([sys.executable, '-m', 'venv', venv_dir])
+        subprocess.check_call([PYTHON_3_10, '-m', 'venv', venv_dir])
         self._temppaths.append(venv_dir)
         venv_executable = os.path.join(venv_dir, 'bin', 'python')
 
         # Install requirements
-        if requirements_txt:
-            logging.debug('Installing dependencies from %s.', requirements_txt)
-            cmd = [venv_executable, '-m', 'pip', 'install', '-r',
-                   requirements_txt]
-            subprocess.check_call(cmd)
-
+        logging.debug('Installing dependencies from %s.', requirements_txt)
+        cmd = [venv_executable, '-m', 'pip', 'install', '-r',
+               requirements_txt]
+        subprocess.check_call(cmd)
         return venv_executable
 
-    def _install_apks(self, apks: list[str], serials: list[str] | None) -> None:
-        """Install test APKs to devices.
+    def _install_apks(self, apks: List[str], serials: List[str]) -> None:
+        """Installs test APKs to devices.
 
         This can be toggled off by omitting the --install option.
 
@@ -270,7 +284,7 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
 
         Args:
             apks: List of APK paths.
-            serials: List of device serials, or None.
+            serials: List of device serials.
         """
         serials = serials or atest_utils.get_adb_devices()
         for apk in apks:
@@ -280,8 +294,8 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
                     ['adb', '-s', serial, 'install', '-r', '-g', apk])
 
     def _get_mobly_command(self, py_executable: str, mobly_pkg: str,
-                           config_path: str) -> list[str]:
-        """Generate a single Mobly test command.
+                           config_path: str) -> List[str]:
+        """Generates a single Mobly test command.
 
         Args:
             py_executable: Path to the Python executable.
@@ -291,10 +305,55 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
         Returns:
             The full Mobly test command.
         """
-        return [py_executable, mobly_pkg, '-c', config_path]
+        command = [py_executable] if py_executable is not None else []
+        return command + [mobly_pkg, '-c', config_path]
 
-    def _run_mobly_command(self, mobly_cmd: list[str]) -> int:
-        """Run the Mobly test command.
+    def _run_and_handle_results(
+            self,
+            mobly_command: List[str],
+            tinfo: test_info.TestInfo,
+            reporter: result_reporter.ResultReporter,
+            rerun_options: RerunOptions) -> int:
+        """Runs for the specified number of iterations and handles results.
+
+        Args:
+            mobly_command: Mobly command to run.
+            tinfo: The TestInfo of the test.
+            reporter: The ResultReporter for the test.
+            rerun_options: Rerun options for the test.
+
+        Returns:
+            0 if tests succeed, non-zero otherwise.
+        """
+        logging.debug(
+            'Running Mobly test %s for %d iteration(s). '
+            'rerun-until-failure: %s, retry-any-failure: %s.',
+            tinfo.test_name, rerun_options.iterations,
+            rerun_options.rerun_until_failure, rerun_options.retry_any_failure)
+        ret_code = atest_enum.ExitCode.SUCCESS
+        for iteration_num in range(rerun_options.iterations):
+            reporter.runners.clear()
+            curr_ret_code = self._run_mobly_command(mobly_command)
+            ret_code |= curr_ret_code
+
+            # Process results from generated summary file
+            summary_file = os.path.join(
+                self.results_dir, MOBLY_LOGS_DIR, LOCAL_TESTBED,
+                LATEST_DIR, TEST_SUMMARY_YAML)
+            test_results = self._get_test_results_from_summary(
+                summary_file, tinfo, iteration_num, rerun_options.iterations)
+            for test_result in test_results:
+                reporter.process_test_result(test_result)
+            reporter.set_current_summary(iteration_num)
+
+            # Break if run ending conditions are met
+            if ((rerun_options.rerun_until_failure and curr_ret_code != 0) or (
+                    rerun_options.retry_any_failure and curr_ret_code == 0)):
+                break
+        return ret_code
+
+    def _run_mobly_command(self, mobly_cmd: List[str]) -> int:
+        """Runs the Mobly test command.
 
         Args:
             mobly_cmd: Mobly command to run.
@@ -310,8 +369,18 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
     def _get_test_results_from_summary(
             self,
             summary_file: str,
-            tinfo: test_info.TestInfo) -> list[test_runner_base.TestResult]:
-        """Parse the Mobly summary file into ATest TestResults."""
+            tinfo: test_info.TestInfo,
+            iteration_num: int,
+            total_iterations: int
+    ) -> List[test_runner_base.TestResult]:
+        """Parses the Mobly summary file into ATest TestResults.
+
+        Args:
+            summary_file: Path to the Mobly summary file.
+            tinfo: The TestInfo of the test.
+            iteration_num: The index of the current iteration.
+            total_iterations: The total number of iterations.
+        """
         if not os.path.isfile(summary_file):
             raise MoblyTestRunnerError(_ERROR_NO_TEST_SUMMARY)
 
@@ -332,12 +401,15 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
                     and record.get(SUMMARY_KEY_BEGIN_TIME) is not None):
                 time_elapsed_ms = (record[SUMMARY_KEY_END_TIME] -
                                    record[SUMMARY_KEY_BEGIN_TIME])
+            test_name = (f'{record[SUMMARY_KEY_TEST_CLASS]}.'
+                         f'{record[SUMMARY_KEY_TEST_NAME]}')
+            if total_iterations > 1:
+                test_name = f'{test_name} (#{iteration_num + 1})'
             result = {
                 'runner_name': self.NAME,
                 'group_name': tinfo.test_name,
                 'test_run_name': record[SUMMARY_KEY_TEST_CLASS],
-                'test_name': '%s.%s' % (record[SUMMARY_KEY_TEST_CLASS],
-                                        record[SUMMARY_KEY_TEST_NAME]),
+                'test_name': test_name,
                 'status': MOBLY_RESULT_TO_STATUS.get(
                     record[SUMMARY_KEY_RESULT], test_runner_base.ERROR_STATUS),
                 'details': record[SUMMARY_KEY_STACKTRACE],
@@ -353,7 +425,7 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
         return test_results
 
     def _cleanup(self) -> None:
-        """Clean up temporary host files/directories."""
+        """Cleans up temporary host files/directories."""
         logging.debug('Cleaning up temporary dirs/files.')
         for temppath in self._temppaths:
             if os.path.isdir(temppath):
