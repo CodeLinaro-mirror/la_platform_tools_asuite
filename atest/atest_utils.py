@@ -866,7 +866,10 @@ def get_modified_files(root_dir):
     modified_files = set()
     try:
         # TODO: (@jimtang) abandon using git command within Atest.
-        find_git_cmd = f'cd {root_dir}; git rev-parse --show-toplevel 2>/dev/null'
+        find_git_cmd = (
+            f'cd {root_dir}; '
+            'git rev-parse --show-toplevel 2>/dev/null'
+        )
         git_paths = subprocess.check_output(
             find_git_cmd, shell=True).decode().splitlines()
         for git_path in git_paths:
@@ -1235,26 +1238,6 @@ def get_build_target():
         os.getenv(constants.TARGET_BUILD_VARIANT, None))
     return build_target
 
-def build_module_info_target(module_info_target):
-    """Build module-info.json after deleting the original one.
-
-    Args:
-        module_info_target: the target name that soong is going to build.
-    """
-    module_file = 'module-info.json'
-    logging.debug('Generating %s - this is required for '
-                  'initial runs or forced rebuilds.', module_file)
-    build_start = time.time()
-    product_out = os.getenv(constants.ANDROID_PRODUCT_OUT, None)
-    module_info_path = Path(product_out).joinpath('module-info.json')
-    if module_info_path.is_file():
-        os.remove(module_info_path)
-    if not build([module_info_target]):
-        sys.exit(ExitCode.BUILD_FAILURE)
-    build_duration = time.time() - build_start
-    metrics.LocalDetectEvent(
-        detect_type=DetectType.ONLY_BUILD_MODULE_INFO,
-        result=int(build_duration))
 
 def has_wildcard(test_name):
     """ Tell whether the test_name(either a list or string) contains wildcard
@@ -1660,9 +1643,9 @@ def save_build_files_timestamp():
     """ Method that generate timestamp of Android.{bp,mk} files.
 
     The checksum of build files are stores in
-        $ANDROID_HOST_OUT/indexes/buildfiles.stp
+        $ANDROID_HOST_OUT/indices/buildfiles.stp
     """
-    index_dir = get_host_out('indexes')
+    index_dir = get_host_out('indices')
     plocate_db = index_dir.joinpath(constants.LOCATE_CACHE)
 
     if plocate_db.is_file():
@@ -1948,7 +1931,7 @@ def generate_print_result_html(result_file: Path):
                             f'{html.escape(Path(log).name)}</a></p>')
             cache.write('</body></html>')
         print(f'\nTo access logs, press "ctrl" and click on\n'
-              f'file://{result_html}\n')
+              f'{colorize(f"file://{result_html}", constants.MAGENTA)}\n')
     except Exception as e:
         logging.debug('Did not generate log html for reason: %s', e)
 
@@ -2009,7 +1992,7 @@ def get_rbe_and_customized_out_state() -> int:
 def build_files_integrity_is_ok() -> bool:
     """Return Whether the integrity of build files is OK."""
     # 0. Inexistence of the timestamp file means a fresh repo sync.
-    timestamp_file = get_host_out('indexes', constants.BUILDFILES_STP)
+    timestamp_file = get_host_out('indices', constants.BUILDFILES_STP)
     if not timestamp_file.is_file():
         return False
     # 1. Ensure no build files were added/deleted.

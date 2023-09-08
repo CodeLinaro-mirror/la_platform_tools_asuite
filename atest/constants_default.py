@@ -246,7 +246,7 @@ CTS_JAR = "cts-tradefed"
 ATEST_TF_MODULE = 'atest-tradefed'
 
 # Atest index path and relative dirs/caches.
-INDEX_DIR = os.path.join(os.getenv(ANDROID_HOST_OUT, ''), 'indexes')
+INDEX_DIR = os.path.join(os.getenv(ANDROID_HOST_OUT, ''), 'indices')
 LOCATE_CACHE = os.path.join(INDEX_DIR, 'plocate.db')
 BUILDFILES_STP = os.path.join(INDEX_DIR, 'buildfiles.stp')
 INT_INDEX = os.path.join(INDEX_DIR, 'integration.idx')
@@ -254,7 +254,6 @@ CLASS_INDEX = os.path.join(INDEX_DIR, 'classes.idx')
 CC_CLASS_INDEX = os.path.join(INDEX_DIR, 'cc_classes.idx')
 PACKAGE_INDEX = os.path.join(INDEX_DIR, 'packages.idx')
 QCLASS_INDEX = os.path.join(INDEX_DIR, 'fqcn.idx')
-MODULE_INDEX = 'modules.idx'
 
 # Regeular Expressions
 CC_EXT_RE = re.compile(r'.*\.(cc|cpp)$')

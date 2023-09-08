@@ -131,6 +131,9 @@ class Features(enum.Enum):
     EXPERIMENTAL_ROBOLECTRIC_TEST = (
         '--experimental-robolectric-test',
         'Enables running Robolectric tests in Bazel mode.', True)
+    NO_BAZEL_DETAILED_SUMMARY = (
+        '--no-bazel-detailed-summary',
+        'Disables printing detailed summary of Bazel test results.', False)
 
     def __init__(self, arg_flag, description, affects_workspace):
         self._arg_flag = arg_flag
@@ -371,9 +374,9 @@ class WorkspaceGenerator:
         if (enabled_features and
             Features.EXPERIMENTAL_REMOTE_AVD in enabled_features and
             Features.EXPERIMENTAL_DEVICE_DRIVEN_TEST not in enabled_features):
-            raise Exception('Cannot run remote device test because '
-                            '"--experimental-device-driven-test" flag is'
-                            ' not set.')
+            raise ValueError('Cannot run remote device test because '
+                             '"--experimental-device-driven-test" flag is'
+                             ' not set.')
         self.enabled_features = enabled_features or set()
         self.resource_manager = resource_manager
         self.workspace_out_path = workspace_out_path
@@ -570,8 +573,8 @@ class WorkspaceGenerator:
         info = self.mod_info.get_module_info(module_name)
 
         if not info:
-            raise Exception(f'Could not find module `{module_name}` in'
-                            f' module_info file')
+            raise LookupError(f'Could not find module `{module_name}` in'
+                              f' module_info file')
 
         return info
 
@@ -580,7 +583,7 @@ class WorkspaceGenerator:
 
         if len(mod_path) < 1:
             module_name = info['module_name']
-            raise Exception(f'Module `{module_name}` does not have any path')
+            raise ValueError(f'Module `{module_name}` does not have any path')
 
         if len(mod_path) > 1:
             module_name = info['module_name']
@@ -756,8 +759,8 @@ class Package:
         target_name = target.name()
 
         if target_name in self.name_to_target:
-            raise Exception(f'Cannot add target `{target_name}` which already'
-                            f' exists in package `{self.path}`')
+            raise ValueError(f'Cannot add target `{target_name}` which already'
+                             f' exists in package `{self.path}`')
 
         self.name_to_target[target_name] = target
 
@@ -822,7 +825,7 @@ class ModuleRef:
     def target(self) -> Target:
         if not self._target:
             target_name = self.info[constants.MODULE_INFO_ID]
-            raise Exception(f'Target not set for ref `{target_name}`')
+            raise ValueError(f'Target not set for ref `{target_name}`')
 
         return self._target
 
@@ -1045,8 +1048,8 @@ def _read_robolectric_jdk_path(test_xml_config_template: Path) -> Path:
     jdk_path = Path(option.get('value', ''))
 
     if not jdk_path.is_relative_to('prebuilts/jdk'):
-        raise Exception(f'Failed to get "java-folder" from '
-                        f'`{test_xml_config_template}`')
+        raise ValueError(f'Failed to get "java-folder" from '
+                         f'`{test_xml_config_template}`')
 
     return jdk_path
 
@@ -1297,8 +1300,8 @@ def group_paths_by_config(
         # The path can only appear in ANDROID_HOST_OUT for host target or
         # ANDROID_PRODUCT_OUT, but cannot appear in both.
         if len(matching_configs) > 1:
-            raise Exception(f'Installed path `{f}` is not in'
-                            f' ANDROID_HOST_OUT or ANDROID_PRODUCT_OUT')
+            raise ValueError(f'Installed path `{f}` is not in'
+                             f' ANDROID_HOST_OUT or ANDROID_PRODUCT_OUT')
 
         config_files[matching_configs[0]].append(f)
 
@@ -1735,9 +1738,9 @@ class BazelTestRunner(trb.TestRunnerBase):
         remote_avd_config = self._get_feature_config_or_warn(
             feature, 'ATEST_BAZEL_REMOTE_AVD_CONFIG')
         if not remote_avd_config:
-            raise Exception('Cannot run remote device test because '
-                            'ATEST_BAZEL_REMOTE_AVD_CONFIG '
-                            'environment variable is not set.')
+            raise ValueError('Cannot run remote device test because '
+                             'ATEST_BAZEL_REMOTE_AVD_CONFIG '
+                             'environment variable is not set.')
         return [f'--config={remote_avd_config}']
 
 
@@ -1918,6 +1921,8 @@ def parse_args(
     mod_info: module_info.ModuleInfo) -> Dict[str, Any]:
     """Parse commandline args and passes supported args to bazel.
 
+    This is shared between both --bazel-mode and --roboleaf-mode.
+
     Args:
         test_infos: A set of TestInfo instances.
         extra_args: A Dict of extra args to append.
@@ -1967,6 +1972,11 @@ def parse_args(
     if not any(arg.startswith('--test_output=') for arg in args_to_append):
         args_to_append.append('--test_output=errors')
 
+    # Default to --test_summary=detailed unless specified otherwise, or if the feature is disabled
+    if not any(arg.startswith('--test_summary=') for arg in args_to_append) and \
+        Features.NO_BAZEL_DETAILED_SUMMARY not in extra_args.get('BAZEL_MODE_FEATURES', []):
+        args_to_append.append('--test_summary=detailed')
+
     return args_to_append
 
 def _map_to_bazel_args(arg: str, arg_value: Any) -> List[str]:
@@ -1989,8 +1999,8 @@ def _soong_target_for_variants(
     build_variants: Set[str]) -> str:
 
     if not build_variants:
-        raise Exception(f'Missing the build variants for module {module_name} '
-                        f'in cquery output!')
+        raise ValueError(f'Missing the build variants for module {module_name} '
+                         f'in cquery output!')
 
     if len(build_variants) > 1:
         return module_name
