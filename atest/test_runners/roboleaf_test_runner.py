@@ -77,7 +77,8 @@ class RoboleafModuleMap(metaclass=Singleton):
         """
         return self._module_map
 
-def are_all_tests_supported(roboleaf_mode, tests) -> Dict[str, TestInfo]:
+def are_all_tests_supported(
+    roboleaf_mode, tests, roboleaf_unsupported_flags) -> Dict[str, TestInfo]:
     """Determine if the list of tests are all supported by bazel based on the mode.
 
     If all requested tests are eligible, then indexing, generating
@@ -87,6 +88,7 @@ def are_all_tests_supported(roboleaf_mode, tests) -> Dict[str, TestInfo]:
     Args:
         roboleaf_mode: The value of --roboleaf-mode.
         tests: A list of test names requested by the user.
+        roboleaf_unsupported_flags: A list of flags which are unsupported by roboleaf mode.
 
     Returns:
         The list of 'b test'-able module names. If --roboleaf-mode is 'off' or
@@ -100,9 +102,23 @@ def are_all_tests_supported(roboleaf_mode, tests) -> Dict[str, TestInfo]:
     eligible_tests = _roboleaf_eligible_tests(roboleaf_mode, tests)
 
     if set(eligible_tests.keys()) == set(tests):
+        if roboleaf_unsupported_flags:
+            # TODO(b/297300818): Upload unsupported flags to metrics.
+            atest_utils.colorful_print(
+                'Following flags are not supported by roboleaf mode:\n'
+                f'{", ".join(roboleaf_unsupported_flags)}\n'
+                'Fallback to non-Bazel ATest...\n'
+                'Please file a feature request for above flags to take '
+                'advantage of Bazel\'s benefits and run tests faster!',
+                constants.YELLOW)
+            return {}
         # only enable b test when every requested test is eligible for roboleaf
         # mode.
         return eligible_tests
+
+    logging.debug(
+        "roboleaf-mode: [%s] are not eligible for b test.",
+        ", ".join(set(tests).difference(eligible_tests.keys())))
 
     # Gracefully fall back to standard atest if not every test is b testable.
     return {}
@@ -281,6 +297,11 @@ class RoboleafTestRunner(test_runner_base.TestRunnerBase):
         # The tool tag attributes this bazel invocation to atest. This
         # is uploaded in BEP when bes publishing is enabled.
         bazel_args.append("--tool_tag=atest")
+
+        # --config=deviceless_tests filters for tradefed_deviceless_test targets.
+        if constants.HOST in extra_args:
+            bazel_args.append("--config=deviceless_tests")
+
         bazel_args_str = ' '.join(shlex.quote(arg) for arg in bazel_args)
         command = f'{self.EXECUTABLE} test {target_patterns} {bazel_args_str}'
         results = [command]
@@ -311,7 +332,6 @@ class RoboleafTestRunner(test_runner_base.TestRunnerBase):
             extra_args: Dict of extra args to add to test run.
             reporter: An instance of result_reporter.ResultReporter.
         """
-        reporter.register_unsupported_runner(self.NAME)
         ret_code = ExitCode.SUCCESS
         try:
             run_cmds = self.generate_run_commands(test_infos, extra_args)

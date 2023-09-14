@@ -1,9 +1,11 @@
 use crate::commands::{restart_type, run_adb_command, split_string, AdbCommand};
 use crate::restart_chooser::RestartType;
+use crate::time;
 use crate::RestartChooser;
 
 use anyhow::Result;
 use itertools::Itertools;
+use log::info;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -30,7 +32,14 @@ fn setup_push() -> Result<String> {
     run_adb_command(&split_string("exec-out stop"))?;
     // We seem to need a remount after reboots to make the system writable.
     run_adb_command(&split_string("remount"))?;
-    run_adb_command(&split_string("exec-out setprop sys.boot_completed 0"))
+    info!("{}", run_adb_command(&split_string("shell getprop sys.boot_completed"))?);
+    // Set the prop to the empty string so our "-z" check in wait works.
+    run_adb_command(&vec![
+        "exec-out".to_string(),
+        "setprop".to_string(),
+        "sys.boot_completed".to_string(),
+        "".to_string(),
+    ])
 }
 
 /// Wait for the device to be ready to use.
@@ -39,33 +48,44 @@ fn setup_push() -> Result<String> {
 fn wait() -> Result<String> {
     // TODO(rbraunstein): Add a timeout here so we don't wait forever and
     // display a reasonable message to the user if wait too long.
-    log::info!("Waiting on device to reboot");
-    let result = run_adb_command(&vec!["wait-for-device".to_string()]);
-    while run_adb_command(&split_string("exec-out getprop sys.boot_completed"))?.trim() != "1" {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-    result
+    info!("{}", run_adb_command(&split_string("shell getprop sys.boot_completed"))?);
+    log::info!("Waiting for device to restart");
+    run_adb_command(&vec!["wait-for-device".to_string()])?;
+    run_adb_command(&vec![
+        "shell".to_string(),
+        "while [[ -z $(getprop sys.boot_completed) ]]; do sleep 1; done".to_string(),
+    ])
+    //info!("{}", run_adb_command(&split_string("shell getprop sys.boot_completed"))?);
 }
 
 pub fn update(
     restart_chooser: &RestartChooser,
     adb_commands: &HashMap<PathBuf, AdbCommand>,
-) -> Result<String> {
+    profiler: &mut crate::Profiler,
+) -> Result<()> {
+    if adb_commands.is_empty() {
+        return Ok(());
+    }
+
     let installed_files =
         adb_commands.keys().map(|p| p.clone().into_os_string().into_string().unwrap()).collect();
 
     setup_push()?;
-    for command in adb_commands.values().cloned().sorted_by(&mkdir_comes_first) {
-        run_adb_command(&command)?;
-    }
+    time!(
+        for command in adb_commands.values().cloned().sorted_by(&mkdir_comes_first) {
+            run_adb_command(&command)?;
+        },
+        profiler.adb_cmds
+    );
 
     match restart_type(restart_chooser, &installed_files) {
-        RestartType::Reboot => reboot(),
+        RestartType::Reboot => time!(reboot(), profiler.reboot),
         RestartType::SoftRestart => soft_restart(),
         RestartType::None => anyhow::bail!("There should be a restart command"),
     }?;
     // TODO(rbraunstein): Add timeout with reasonable error message on wait.
-    wait()
+    time!(wait()?, profiler.restart_after_boot);
+    Ok(())
 }
 
 // Ensure mkdir comes before other commands.
@@ -73,8 +93,8 @@ pub fn update(
 // the AdbCommand along with the commands so we don't have to check the strings.
 // Too much thinking here.
 fn mkdir_comes_first(a: &AdbCommand, b: &AdbCommand) -> Ordering {
-    let a_is_mkdir = a[..2] == vec!["shell".to_string(), "mkdir".to_string()];
-    let b_is_mkdir = b[..2] == vec!["shell".to_string(), "mkdir".to_string()];
+    let a_is_mkdir = a.len() > 1 && a[..2] == vec!["shell".to_string(), "mkdir".to_string()];
+    let b_is_mkdir = b.len() > 1 && b[..2] == vec!["shell".to_string(), "mkdir".to_string()];
     if !a_is_mkdir && !b_is_mkdir {
         return Ordering::Equal;
     }
