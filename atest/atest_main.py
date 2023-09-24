@@ -65,6 +65,7 @@ from atest.metrics import metrics_utils
 from atest.test_finders import test_finder_utils
 from atest.test_runners import regression_test_runner
 from atest.test_runners import roboleaf_test_runner
+from atest.test_runners.atest_tf_test_runner import AtestTradefedTestRunner
 from atest.test_finders.test_info import TestInfo
 from atest.tools import atest_tools as at
 
@@ -929,8 +930,13 @@ def need_run_index_targets(
     Returns:
         True when none of the above conditions were found.
     """
-    ignore_args = (args.update_cmd_mapping, args.verify_cmd_mapping, args.dry_run)
-    if any(ignore_args):
+    no_indexing_args = (
+        args.update_cmd_mapping,
+        args.verify_cmd_mapping,
+        args.dry_run,
+        args.list_modules,
+    )
+    if any(no_indexing_args):
         return False
     if extra_args.get(constants.VERIFY_ENV_VARIABLE, False):
         return False
@@ -944,7 +950,7 @@ def _b_test(tests, extra_args, results_dir):
 
     Args:
         tests: List of tests to pass to `b test`
-        args: An argparse.Namespace class instance holding parsed args.
+        extra_args: An argparse.Namespace class instance holding parsed args.
         results_dir: A directory which stores the ATest execution information.
 
     Returns:
@@ -1150,8 +1156,17 @@ def main(
         test_names = [t.test_name for t in test_infos]
         # Avoid checking twice.
         if set(test_names) != set(args.tests):
+            test_name_to_filters = collections.defaultdict(set)
+            for t in test_infos:
+                filters = test_name_to_filters[t.test_name]
+                filters |= t.data.get(constants.TI_FILTER, set())
+
             b_supported_tests = roboleaf_test_runner.are_all_tests_supported(
-                args.roboleaf_mode, test_names, roboleaf_unsupported_flags)
+                args.roboleaf_mode,
+                test_names,
+                roboleaf_unsupported_flags,
+                {t: AtestTradefedTestRunner.flatten_test_filters(test_name_to_filters.get(t))
+                 for t in test_name_to_filters})
             if b_supported_tests:
                 atest_utils.colorful_print(
                     'Specifying the module name or bazel label in command-line '
@@ -1224,6 +1239,10 @@ def main(
         # Add module-info.json target to the list of build targets to keep the
         # file up to date.
         build_targets.add(module_info.get_module_info_target())
+
+        # Add the -jx as a build target if user specify it.
+        if args.build_j:
+            build_targets.add(f'-j{args.build_j}')
 
         build_start = time.time()
         success = atest_utils.build(build_targets)
