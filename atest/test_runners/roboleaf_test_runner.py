@@ -33,7 +33,8 @@ from atest import bazel_mode
 from atest import constants
 from atest import result_reporter
 
-from atest.atest_enum import ExitCode
+from atest.atest_enum import DetectType, ExitCode
+from atest.metrics import metrics
 from atest.test_finders.test_info import TestInfo, TestFilter
 from atest.test_runners import test_runner_base
 from atest.test_runners import atest_tf_test_runner
@@ -66,8 +67,17 @@ class RoboleafModuleMap(metaclass=Singleton):
     def __init__(self, module_map_location: str = ''):
         module_map = _generate_map(module_map_location)
         self._module_map = module_map
+
+        # AOSP allowlist
         self.launched_modules = _read_allowlist(
             Path(_ALLOWLIST_LAUNCHED), module_map = module_map)
+
+        # Vendor allowlist
+        additional_allowlist = os.environ.get("ATEST_ADDITIONAL_ROBOLEAF_LAUNCHED")
+        if additional_allowlist:
+            self.launched_modules.extend(_read_allowlist(
+                Path(additional_allowlist), module_map = module_map
+            ))
 
     def get_map(self) -> Dict[str, str]:
         """Return converted module map.
@@ -110,13 +120,14 @@ def are_all_tests_supported(
     if set(eligible_tests.keys()) == set(tests):
         if roboleaf_unsupported_flags:
             # TODO(b/297300818): Upload unsupported flags to metrics.
-            atest_utils.colorful_print(
-                'Following flags are not supported by roboleaf mode:\n'
-                f'{", ".join(roboleaf_unsupported_flags)}\n'
-                'Fallback to non-Bazel ATest...\n'
-                'Please file a feature request for above flags to take '
-                'advantage of Bazel\'s benefits and run tests faster!',
-                constants.YELLOW)
+            atest_utils.roboleaf_print("These flags are not supported in Roboleaf mode:")
+            for flag in roboleaf_unsupported_flags:
+                atest_utils.roboleaf_print(f'{atest_utils.colorize(flag, constants.YELLOW)}')
+            atest_utils.roboleaf_print("Gracefully falling back to standard ATest..")
+            metrics.LocalDetectEvent(
+                detect_type=DetectType.ROBOLEAF_UNSUPPORTED_FLAG,
+                result=DetectType.ROBOLEAF_UNSUPPORTED_FLAG,
+            )
             return {}
         # only enable b test when every requested test is eligible for roboleaf
         # mode.

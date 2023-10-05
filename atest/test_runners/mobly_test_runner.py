@@ -19,6 +19,7 @@ import datetime
 import logging
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -51,7 +52,7 @@ _ERROR_INVALID_TESTPARAMS = (
     'format.')
 
 # TODO(b/287136126): Use host python once compatibility issue is resolved.
-PYTHON_3_10 = 'python3.10'
+PYTHON_3_11 = 'python3.11'
 
 FILE_REQUIREMENTS_TXT = 'requirements.txt'
 FILE_SUFFIX_APK = '.apk'
@@ -69,6 +70,8 @@ MOBLY_LOGS_DIR = 'mobly_logs'
 CONFIG_FILE = 'mobly_config.yaml'
 LATEST_DIR = 'latest'
 TEST_SUMMARY_YAML = 'test_summary.yaml'
+
+CVD_SERIAL_PATTERN = r'.+:([0-9]+)$'
 
 SUMMARY_KEY_TYPE = 'Type'
 SUMMARY_TYPE_RECORD = 'Record'
@@ -150,7 +153,8 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
                 test_files = self._get_test_files(tinfo)
                 py_executable = self._setup_python_env(
                     test_files.requirements_txt)
-                serials = atest_configs.GLOBAL_ARGS.serial or []
+                serials = (atest_configs.GLOBAL_ARGS.serial
+                           or self._get_cvd_serials())
                 if constants.DISABLE_INSTALL not in extra_args:
                     self._install_apks(test_files.test_apks, serials)
                 mobly_config = self._generate_mobly_config(
@@ -160,9 +164,9 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
                 test_cases = self._get_test_cases_from_spec(tinfo)
                 mobly_command = self._get_mobly_command(
                     py_executable, test_files.mobly_pkg, mobly_config,
-                    test_cases)
+                    test_cases, mobly_args)
                 ret_code |= self._run_and_handle_results(
-                    mobly_command, tinfo, reporter, rerun_options)
+                    mobly_command, tinfo, reporter, rerun_options, mobly_args)
             finally:
                 self._cleanup()
         return ret_code
@@ -198,6 +202,16 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
     def _parse_custom_args(self, argv: list[str]) -> argparse.Namespace:
         """Parse custom CLI args into Mobly runner options."""
         parser = argparse.ArgumentParser(prog='atest ... --')
+        parser.add_argument(
+            '--config',
+            help='Path to a custom Mobly testbed config. Overrides all other '
+                 'configuration options.')
+        parser.add_argument(
+            '--testbed',
+            help='Selects the name of the testbed to use for the test. Only '
+                 'use this option in conjunction with --config. Defaults to '
+                 '"LocalTestBed".'
+        )
         parser.add_argument(
             '--testparam',
             metavar='PARAM=VALUE',
@@ -245,6 +259,8 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
             serials: List[str], test_apks: List[str]) -> str:
         """Creates a Mobly YAML config given the test parameters.
 
+        If --config is specified, use that file as the testbed config.
+
         If --serial is specified, the test will use those specific devices,
         otherwise it will use all ADB-connected devices.
 
@@ -265,29 +281,38 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
         Returns:
             Path to the generated config.
         """
-        local_testbed = {
-            CONFIG_KEY_NAME: LOCAL_TESTBED,
-            CONFIG_KEY_CONTROLLERS: {
-                CONFIG_KEY_ANDROID_DEVICE: serials if serials else '*',
-            },
-            CONFIG_KEY_TEST_PARAMS: {},
-        }
-        if mobly_args.testparam:
-            try:
-                local_testbed[CONFIG_KEY_TEST_PARAMS].update(dict(
-                    [param.split('=', 1) for param in mobly_args.testparam]))
-            except ValueError as e:
-                raise MoblyTestRunnerError(_ERROR_INVALID_TESTPARAMS) from e
-        if test_apks:
-            local_testbed[CONFIG_KEY_TEST_PARAMS][CONFIG_KEY_FILES] = {
-                Path(test_apk).stem: [test_apk] for test_apk in test_apks
+        if mobly_args.config:
+            config_path = os.path.abspath(os.path.expanduser(mobly_args.config))
+            logging.debug('Using existing custom Mobly config at %s',
+                          config_path)
+            with open(config_path, encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+        else:
+            local_testbed = {
+                CONFIG_KEY_NAME: LOCAL_TESTBED,
+                CONFIG_KEY_CONTROLLERS: {
+                    CONFIG_KEY_ANDROID_DEVICE: serials if serials else '*',
+                },
+                CONFIG_KEY_TEST_PARAMS: {},
             }
-        config = {
-            CONFIG_KEY_TESTBEDS: [local_testbed],
-            CONFIG_KEY_MOBLY_PARAMS: {
-                CONFIG_KEY_LOG_PATH: os.path.join(
-                    self.results_dir, MOBLY_LOGS_DIR),
-            },
+            if mobly_args.testparam:
+                try:
+                    local_testbed[CONFIG_KEY_TEST_PARAMS].update(
+                        dict([param.split('=', 1)
+                              for param in mobly_args.testparam]))
+                except ValueError as e:
+                    raise MoblyTestRunnerError(_ERROR_INVALID_TESTPARAMS) from e
+            if test_apks:
+                local_testbed[CONFIG_KEY_TEST_PARAMS][CONFIG_KEY_FILES] = {
+                    Path(test_apk).stem: [test_apk] for test_apk in test_apks
+                }
+            config = {
+                CONFIG_KEY_TESTBEDS: [local_testbed],
+            }
+        # Use ATest logs directory as the Mobly log path
+        config[CONFIG_KEY_MOBLY_PARAMS] = {
+            CONFIG_KEY_LOG_PATH: os.path.join(
+                self.results_dir, MOBLY_LOGS_DIR),
         }
         config_path = os.path.join(self.results_dir, CONFIG_FILE)
         logging.debug('Generating Mobly config at %s', config_path)
@@ -315,7 +340,7 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
             return None
         venv_dir = tempfile.mkdtemp(prefix='venv_')
         logging.debug('Creating virtualenv at %s.', venv_dir)
-        subprocess.check_call([PYTHON_3_10, '-m', 'venv', venv_dir])
+        subprocess.check_call([PYTHON_3_11, '-m', 'venv', venv_dir])
         self._temppaths.append(venv_dir)
         venv_executable = os.path.join(venv_dir, 'bin', 'python')
 
@@ -325,6 +350,18 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
                requirements_txt]
         subprocess.check_call(cmd)
         return venv_executable
+
+    def _get_cvd_serials(self) -> List[str]:
+        """Gets the serials of cvd devices available for the test.
+
+        Returns:
+            A list of device serials.
+        """
+        if not atest_configs.GLOBAL_ARGS.acloud_create:
+            return []
+        devices = atest_utils.get_adb_devices()
+        return [device for device in devices
+                if re.match(CVD_SERIAL_PATTERN, device)]
 
     def _install_apks(self, apks: List[str], serials: List[str]) -> None:
         """Installs test APKs to devices.
@@ -381,7 +418,8 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
 
     def _get_mobly_command(
             self, py_executable: str, mobly_pkg: str, config_path: str,
-            test_cases: List[str]) -> List[str]:
+            test_cases: List[str],
+            mobly_args: argparse.ArgumentParser) -> List[str]:
         """Generates a single Mobly test command.
 
         Args:
@@ -389,12 +427,14 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
             mobly_pkg: Path to the Mobly test package.
             config_path: Path to the Mobly config.
             test_cases: List of test cases to run.
+            mobly_args: Custom args for the Mobly runner.
 
         Returns:
             The full Mobly test command.
         """
         command = [py_executable] if py_executable is not None else []
-        command += [mobly_pkg, '-c', config_path]
+        command += [mobly_pkg, '-c', config_path, '--test_bed',
+                    mobly_args.testbed or LOCAL_TESTBED]
         if test_cases:
             command += ['--tests', *test_cases]
         return command
@@ -404,7 +444,9 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
             mobly_command: List[str],
             tinfo: test_info.TestInfo,
             reporter: result_reporter.ResultReporter,
-            rerun_options: RerunOptions) -> int:
+            rerun_options: RerunOptions,
+            mobly_args: argparse.ArgumentParser,
+    ) -> int:
         """Runs for the specified number of iterations and handles results.
 
         Args:
@@ -412,6 +454,7 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
             tinfo: The TestInfo of the test.
             reporter: The ResultReporter for the test.
             rerun_options: Rerun options for the test.
+            mobly_args: Custom args for the Mobly runner.
 
         Returns:
             0 if tests succeed, non-zero otherwise.
@@ -429,7 +472,8 @@ class MoblyTestRunner(test_runner_base.TestRunnerBase):
 
             # Process results from generated summary file
             summary_file = os.path.join(
-                self.results_dir, MOBLY_LOGS_DIR, LOCAL_TESTBED,
+                self.results_dir, MOBLY_LOGS_DIR,
+                mobly_args.testbed or LOCAL_TESTBED,
                 LATEST_DIR, TEST_SUMMARY_YAML)
             test_results = self._get_test_results_from_summary(
                 summary_file, tinfo, iteration_num, rerun_options.iterations)
