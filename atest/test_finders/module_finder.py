@@ -79,13 +79,12 @@ class ModuleFinder(test_finder_base.TestFinderBase):
                 testable_modules_only=True,
             )
 
-        if not modules_to_test:
-            modules_to_test = self.module_info.get_modules_by_path(
-                path=path,
-                testable_modules_only=True,
-            )
+        modules_to_test |= self.module_info.get_modules_by_path(
+            path=path,
+            testable_modules_only=True,
+        )
 
-        return test_finder_utils.extract_test_from_tests(modules_to_test)
+        return test_finder_utils.extract_selected_tests(modules_to_test)
 
     def _is_vts_module(self, module_name):
         """Returns True if the module is a vts10 module, else False."""
@@ -325,7 +324,7 @@ class ModuleFinder(test_finder_base.TestFinderBase):
             if test_config_list:
                 # multiple test configs
                 if len(test_config_list) > 1:
-                    test_configs = test_finder_utils.extract_test_from_tests(
+                    test_configs = test_finder_utils.extract_selected_tests(
                         test_config_list, default_all=default_all_config)
                 else:
                     test_configs = test_config_list

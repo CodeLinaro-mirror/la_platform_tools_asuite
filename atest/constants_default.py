@@ -38,10 +38,6 @@ GTS_GOOGLE_SERVICE_ACCOUNT = ''
 WAIT_FOR_DEBUGGER = 'WAIT_FOR_DEBUGGER'
 DISABLE_INSTALL = 'DISABLE_INSTALL'
 DISABLE_TEARDOWN = 'DISABLE_TEARDOWN'
-PRE_PATCH_ITERATIONS = 'PRE_PATCH_ITERATIONS'
-POST_PATCH_ITERATIONS = 'POST_PATCH_ITERATIONS'
-PRE_PATCH_FOLDER = 'PRE_PATCH_FOLDER'
-POST_PATCH_FOLDER = 'POST_PATCH_FOLDER'
 SERIAL = 'SERIAL'
 SHARDING = 'SHARDING'
 ALL_ABI = 'ALL_ABI'
@@ -65,7 +61,6 @@ BAZEL_MODE_FEATURES = 'BAZEL_MODE_FEATURES'
 REQUEST_UPLOAD_RESULT = 'REQUEST_UPLOAD_RESULT'
 DISABLE_UPLOAD_RESULT = 'DISABLE_UPLOAD_RESULT'
 MODULES_IN = 'MODULES-IN-'
-NO_ENABLE_ROOT = 'NO_ENABLE_ROOT'
 VERIFY_ENV_VARIABLE = 'VERIFY_ENV_VARIABLE'
 SKIP_VARS = [VERIFY_ENV_VARIABLE]
 AGGREGATE_METRIC_FILTER_ARG = 'AGGREGATE_METRIC_FILTER'
@@ -413,9 +408,11 @@ REQUIRE_DEVICES_MSG = (
 # Default shard num.
 SHARD_NUM = 2
 
+ROBOLEAF_TEST_FILTER = 'roboleaf_test_filter'
+
 # Flags which roboleaf mode already supported:
 #   --iterations, --rerun-until-failure, --retry-any-failure, --verbose,
-#   --bazel-arg, --, --wait-for-debugger, --host
+#   --bazel-arg, --, --wait-for-debugger, --host, --serial, --no-metrics
 #
 # Flags which roboleaf mode doesn't need to support:
 #   --minimal-build, --bazel_mode, --null-feature, --experimental-remote-avd,
@@ -447,13 +444,10 @@ ROBOLEAF_UNSUPPORTED_FLAGS = {
     'experimental_coverage': UnsupportedFlag(lambda d, v: d != v, ""),
     'test_mapping': UnsupportedFlag(lambda d, v: d != v, ""),
     'device_only': UnsupportedFlag(lambda d, v: d != v, ""),
-    'no_enable_root': UnsupportedFlag(lambda d, v: d != v, ""),
     'sharding': UnsupportedFlag(lambda d, v: d != v, ""),
     'use_modules_in': UnsupportedFlag(lambda d, v: d != v, ""),
-    'auto_ld_library_path': UnsupportedFlag(lambda d, v: d != v, ""),
     'request_upload_result': UnsupportedFlag(lambda d, v: d != v, ""),
     'disable_upload_result': UnsupportedFlag(lambda d, v: d != v, ""),
-    'smart_testing_local': UnsupportedFlag(lambda d, v: d != v, ""),
     'include_subdirs': UnsupportedFlag(lambda d, v: d != v, ""),
     'enable_file_patterns': UnsupportedFlag(lambda d, v: d != v, ""),
     'host_unit_test_only': UnsupportedFlag(lambda d, v: d != v, ""),
@@ -464,10 +458,8 @@ ROBOLEAF_UNSUPPORTED_FLAGS = {
     'version': UnsupportedFlag(lambda d, v: d != v, ""),
     'help': UnsupportedFlag(lambda d, v: d != v, ""),
     'build_output': UnsupportedFlag(lambda d, v: d != v, ""),
-    'fuzzy_search': UnsupportedFlag(lambda d, v: d != v, ""),
     'acloud_create': UnsupportedFlag(lambda d, v: d != v, ""),
     'start_avd': UnsupportedFlag(lambda d, v: d != v, ""),
-    'serial': UnsupportedFlag(lambda d, v: d != v, ""),
     'flakes_info': UnsupportedFlag(lambda d, v: d != v, ""),
     'tf_early_device_release': UnsupportedFlag(lambda d, v: d != v, ""),
     'test_config_select': UnsupportedFlag(lambda d, v: d != v, ""),
@@ -492,7 +484,6 @@ ROBOLEAF_UNSUPPORTED_FLAGS = {
     'test_timeout': UnsupportedFlag(lambda d, v: d != v, ""),
     'latest_result': UnsupportedFlag(lambda d, v: d != v, ""),
     'history': UnsupportedFlag(lambda d, v: d != v, ""),
-    'no_metrics': UnsupportedFlag(lambda d, v: d != v, ""),
     'aggregate_metric_filter': UnsupportedFlag(lambda d, v: d != v, ""),
     'no_checking_device': UnsupportedFlag(lambda d, v: d != v, ""),
 }
