@@ -86,9 +86,8 @@ class AtestUnittests(unittest.TestCase):
         """Test _has_valid_test_mapping_args method."""
         # Test test mapping related args are not mixed with incompatible args.
         options_no_tm_support = [
-            ('--generate-baseline', '5'),
-            ('--detect-regression', 'path'),
-            ('--generate-new-metrics', '5')
+            ('--annotation-filter',
+             'android.test.suitebuilder.annotation.SmallTest'),
         ]
         tm_options = [
             '--test-mapping',
@@ -181,6 +180,27 @@ class AtestUnittests(unittest.TestCase):
         reload(constants)
         self.assertTrue(date_time)
 
+    def test_has_sufficient_devices_no_device_no_require(self):
+        required_num = 0
+        self.assertTrue(atest_main.has_sufficient_devices(required_num))
+
+    def test_has_sufficient_devices_equal_required_attached_devices(self):
+        required_num = 2
+        attached_devices = ['serial1', 'serial2']
+
+        self.assertTrue(atest_main.has_sufficient_devices(required_num, attached_devices))
+
+    def test_has_sufficient_devices_attached_devices_more_than_required(self):
+        required_num = 2
+        attached_devices = ['serial1', 'serial2', 'serial3']
+
+        self.assertTrue(atest_main.has_sufficient_devices(required_num, attached_devices))
+
+    def test_has_sufficient_devices_not_enough_devices(self):
+        required_num = 2
+        attached_devices = ['serial1']
+
+        self.assertFalse(atest_main.has_sufficient_devices(required_num, attached_devices))
 
 # pylint: disable=missing-function-docstring
 class AtestUnittestFixture(fake_filesystem_unittest.TestCase):

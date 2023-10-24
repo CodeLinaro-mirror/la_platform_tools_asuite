@@ -3,7 +3,7 @@ use crate::fingerprint::*;
 use crate::restart_chooser::{RestartChooser, RestartType};
 
 use anyhow::{anyhow, Context, Result};
-use log::info;
+use log::{debug, info};
 use serde::__private::ToString;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -22,7 +22,6 @@ pub enum AdbAction {
     DeleteFile,
     /// e.g. adb rm -rf <device_filename>
     DeleteDir,
-    // TODO: Also need commands to set user, group and permissions.
 }
 
 pub fn split_string(s: &str) -> AdbCommand {
@@ -103,14 +102,12 @@ pub fn compose(diffs: &Diffs, product_out: &Path) -> Commands {
             match metadata.file_type {
                 // [adb] rm device_path
                 FileType::File | FileType::Symlink => to_args(AdbAction::DeleteFile),
-                // TODO(rbraunstein): Deal with deleting non-empty directory, probably with
-                //  `rm -rf` or deleting all files before deleting dirs and deleting most nested first.
+                // TODO(rbraunstein): More efficient deletes, or change rm -rf back to rmdir
                 FileType::Directory => to_args(AdbAction::DeleteDir),
             },
         );
     }
 
-    // TODO(rbraunstein): Put rw bits in fingerprint and set on device.
     commands
 }
 
@@ -118,7 +115,7 @@ pub fn compose(diffs: &Diffs, product_out: &Path) -> Commands {
 /// If there is a non-zero exit code or non-empty stderr, then
 /// creates a Result Err string with the details.
 pub fn run_adb_command(args: &AdbCommand) -> Result<String> {
-    info!("Running: ADB {args:?}");
+    info!("       -- adb {args:?}");
     let output =
         process::Command::new("adb").args(args).output().context("Error running adb commands")?;
 
@@ -173,7 +170,7 @@ pub fn restart_type(
 
     for installed_file in installed_file_paths {
         let restart_type = build_system.restart_type(installed_file);
-        info!(
+        debug!(
             " -- Restart is {} for {installed_file}",
             match restart_type.clone() {
                 Some(r) => format!("{r:?}"),

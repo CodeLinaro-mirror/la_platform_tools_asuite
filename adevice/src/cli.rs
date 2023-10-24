@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(about = "Tool to push your rebuilt modules to your device.")]
-#[command(propagate_version = true)]
+#[command(version = "0.2")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -26,6 +26,11 @@ pub enum Commands {
     /// Removes module name from list of tracked modules.
     /// See `track` for more details.
     Untrack(ModuleNames),
+    /// Removes untracked files from the device.
+    Clean {
+        #[clap(long, short)]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -56,7 +61,7 @@ pub struct GlobalOptions {
     #[clap(long = "product_out", global = true)]
     pub product_out: Option<String>,
     /// Do not make any modification if more than this many are needed
-    #[clap(long, short, default_value_t = 100)]
+    #[clap(long, short, default_value_t = 200, global = true)]
     pub max_allowed_changes: usize,
     // TODO(rbraunstein): Import clap-verbosity-flag crate so we can use -vv instead.
     // Print commands while executing them.
@@ -68,8 +73,8 @@ pub struct GlobalOptions {
 pub enum Verbosity {
     /// Only show minimal information.
     None,
-    /// Show all adb operations, and all timings.
+    /// Show all adb operations.
     Details,
-    /// For debugging internals of tool
+    /// For debugging internals of tool and timings.
     Debug,
 }

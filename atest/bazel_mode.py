@@ -77,10 +77,6 @@ _SUPPORTED_BAZEL_ARGS = MappingProxyType({
     # https://docs.bazel.build/versions/main/command-line-reference.html#flag--runs_per_test
     constants.ITERATIONS:
         lambda arg_value: [f'--runs_per_test={str(arg_value)}'],
-    # https://docs.bazel.build/versions/main/command-line-reference.html#flag--test_keep_going
-    constants.RERUN_UNTIL_FAILURE:
-        lambda arg_value:
-        ['--notest_keep_going', f'--runs_per_test={str(arg_value)}'],
     # https://docs.bazel.build/versions/main/command-line-reference.html#flag--flaky_test_attempts
     constants.RETRY_ANY_FAILURE:
         lambda arg_value: [f'--flaky_test_attempts={str(arg_value)}'],
@@ -1878,7 +1874,7 @@ class BazelTestRunner(trb.TestRunnerBase):
         target_patterns = ' '.join(
             self.test_info_target_label(i) for i in test_infos)
 
-        bazel_args = parse_args(test_infos, extra_args, self.mod_info)
+        bazel_args = parse_args(test_infos, extra_args)
 
         # If BES is not enabled, use the option of
         # '--nozip_undeclared_test_outputs' to not compress the test outputs.
@@ -1916,8 +1912,7 @@ class BazelTestRunner(trb.TestRunnerBase):
 
 def parse_args(
     test_infos: List[test_info.TestInfo],
-    extra_args: Dict[str, Any],
-    mod_info: module_info.ModuleInfo) -> Dict[str, Any]:
+    extra_args: Dict[str, Any]) -> Dict[str, Any]:
     """Parse commandline args and passes supported args to bazel.
 
     This is shared between both --bazel-mode and --roboleaf-mode.
@@ -1925,7 +1920,6 @@ def parse_args(
     Args:
         test_infos: A set of TestInfo instances.
         extra_args: A Dict of extra args to append.
-        mod_info: A ModuleInfo object.
 
     Returns:
         A list of args to append to the run command.
@@ -1952,8 +1946,7 @@ def parse_args(
 
     # TODO(b/215461642): Store the extra_args in the top-level object so
     # that we don't have to re-parse the extra args to get BAZEL_ARG again.
-    tf_args, _ = tfr.extra_args_to_tf_args(
-        mod_info, test_infos, extra_args_copy)
+    tf_args, _ = tfr.extra_args_to_tf_args(extra_args_copy)
 
     # Add ATest include filter argument to allow testcase filtering.
     tf_args.extend(tfr.get_include_filter(test_infos))
@@ -1971,9 +1964,15 @@ def parse_args(
     if not any(arg.startswith('--test_output=') for arg in args_to_append):
         args_to_append.append('--test_output=errors')
 
-    # Default to --test_summary=detailed unless specified otherwise, or if the feature is disabled
-    if not any(arg.startswith('--test_summary=') for arg in args_to_append) and \
-        Features.NO_BAZEL_DETAILED_SUMMARY not in extra_args.get('BAZEL_MODE_FEATURES', []):
+    # Default to --test_summary=detailed unless specified otherwise, or if the
+    # feature is disabled
+    if not any(
+            arg.startswith('--test_summary=')
+            for arg in args_to_append
+    ) and (
+            Features.NO_BAZEL_DETAILED_SUMMARY not in extra_args.get(
+        'BAZEL_MODE_FEATURES', [])
+    ):
         args_to_append.append('--test_summary=detailed')
 
     return args_to_append
