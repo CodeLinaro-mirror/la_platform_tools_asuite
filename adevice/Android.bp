@@ -18,6 +18,7 @@ rust_test_host {
     	  "src/adevice.rs"
     ],
     defaults: ["adevice_deps_defaults"],
+    rustlibs: ["libgoogletest_rust"],
     test_options: {
         unit_test: true,
     },
@@ -48,6 +49,7 @@ rust_test {
     srcs: [
         "src/adevice_fingerprint.rs",
     ],
+    rustlibs: ["libgoogletest_rust"],
     static_executable: true,
     test_suites: ["general-tests"],
     test_options: {
@@ -63,7 +65,7 @@ rust_protobuf {
     use_protobuf3: true,
     protos: [
         "src/protos/clientanalytics.proto",
-        "src/protos/internal_user_log.proto",
+        "src/protos/user_log.proto",
     ],
 }
 

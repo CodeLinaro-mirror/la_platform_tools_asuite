@@ -2,26 +2,47 @@
 
 use adevice_proto::clientanalytics::LogEvent;
 use adevice_proto::clientanalytics::LogRequest;
-use adevice_proto::internal_user_log::atest_log_event_internal::AtestStartEvent;
-use adevice_proto::internal_user_log::AtestLogEventInternal;
+use adevice_proto::user_log::adevice_log_event::AdeviceStartEvent;
+use adevice_proto::user_log::AdeviceLogEvent;
 
 use anyhow::{anyhow, Result};
 use log::debug;
 use std::env;
 use std::fs;
 use std::process::Command;
+use std::time::UNIX_EPOCH;
 
 const OUT_ENV: &str = "OUT";
+const INTERNAL_USER_GOB_CURL_PATH: &str = "/usr/bin/gob-curl";
 const INTERNAL_USER_ENV: &str = "USER";
 const CLEARCUT_PROD_URL: &str = "https://play.googleapis.com/log";
-const ASUITE_LOG_SOURCE: i32 = 971;
-const TOOL_NAME: &str = "adevice";
+const ADEVICE_LOG_SOURCE: i32 = 2265;
+
+pub trait MetricSender {
+    fn add_start_event(&mut self, command_line: &str);
+}
 
 #[derive(Debug, Clone)]
 pub struct Metrics {
-    events: Vec<AtestLogEventInternal>,
+    events: Vec<LogEvent>,
     user: String,
     url: String,
+}
+
+impl MetricSender for Metrics {
+    fn add_start_event(&mut self, command_line: &str) {
+        let mut start_event = AdeviceStartEvent::default();
+        start_event.set_command_line(command_line.to_string());
+
+        let mut event = self.default_log_event();
+        event.set_adevice_start_event(start_event);
+
+        self.events.push(LogEvent {
+            event_time_ms: Some(UNIX_EPOCH.elapsed().unwrap().as_millis() as i64),
+            source_extension: Some(protobuf::Message::write_to_bytes(&event).unwrap()),
+            special_fields: protobuf::SpecialFields::new(),
+        });
+    }
 }
 
 impl Metrics {
@@ -33,36 +54,23 @@ impl Metrics {
         }
     }
 
-    pub fn add_start_event(&mut self, command_line: &str) {
-        let mut start_event = AtestStartEvent::default();
-        start_event.set_command_line(command_line.to_string());
-
-        let mut event = self.default_log_event();
-        event.set_atest_start_event(start_event);
-        self.events.push(event);
-    }
-
     fn send(&self) -> Result<()> {
         if self.url.is_empty() {
             return Err(anyhow!("Metrics not sent since url is empty"));
         }
 
-        // Only send for internal users
-        if self.user.is_empty() {
-            return Err(anyhow!("Metrics not sent since USER env is not set"));
+        // Only send for internal users, check for gob-curl binary
+        if fs::metadata(INTERNAL_USER_GOB_CURL_PATH).is_err() {
+            return Err(anyhow!("Not internal user: Metrics not sent since gob-curl not found"));
         }
 
         // Serialize
         let body = {
             let mut log_request = LogRequest::default();
-            log_request.set_log_source(ASUITE_LOG_SOURCE);
+            log_request.set_log_source(ADEVICE_LOG_SOURCE);
 
             for e in &*self.events {
-                log_request.log_event.push(LogEvent {
-                    event_time_ms: ::std::option::Option::None,
-                    source_extension: Some(protobuf::Message::write_to_bytes(e).unwrap()),
-                    special_fields: protobuf::SpecialFields::new(),
-                });
+                log_request.log_event.push(e.clone());
             }
             let res: Vec<u8> = protobuf::Message::write_to_bytes(&log_request).unwrap();
             res
@@ -88,17 +96,16 @@ impl Metrics {
             .arg(self.url.clone())
             .output()
             .expect("Failed to send metrics");
-        fs::remove_file(temp_file_path).expect("Failed to remove metrics file");
+        fs::remove_file(temp_file_path)?;
 
         // TODO implement next_request_wait_millis that comes back in response
         debug!("Metrics upload response: {:?}", output);
         Ok(())
     }
 
-    fn default_log_event(&self) -> AtestLogEventInternal {
-        let mut event = AtestLogEventInternal::default();
+    fn default_log_event(&self) -> AdeviceLogEvent {
+        let mut event = AdeviceLogEvent::default();
         event.set_user_key(self.user.to_string());
-        event.set_tool_name(TOOL_NAME.to_string());
         event
     }
 }

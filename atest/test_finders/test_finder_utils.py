@@ -304,7 +304,7 @@ def extract_selected_tests(tests: Iterable, default_all=False) -> List[str]:
     Returns:
         A string list of paths.
     """
-    tests = list(tests)
+    tests = sorted(list(tests))
     count = len(tests)
     if default_all or count <= 1:
         return tests if count else None
