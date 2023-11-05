@@ -612,7 +612,8 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
             raise Error(
                 f'Could not find module information for {t_info.raw_test_name}')
 
-        if not self._is_host_enabled() and self.module_info.is_device_driven_test(info):
+        if self.module_info.is_device_driven_test(info) and (
+            not self._is_host_enabled() or not self.module_info.is_host_driven_test(info)):
             return DeviceTest(info, Variant.DEVICE, t_info.mainline_modules)
 
         if self.module_info.is_modern_robolectric_test(info):
@@ -1198,8 +1199,6 @@ def extra_args_to_tf_args(
 
     # Mapping supported TF arguments to the processing function.
     supported_tf_args = dict({
-        constants.ENABLE_DEVICE_PREPARER:
-            constant_list('--enable-device-preparer'),
         constants.WAIT_FOR_DEBUGGER:
             constant_list('--wait-for-debugger'),
         constants.DISABLE_INSTALL:
@@ -1298,7 +1297,6 @@ def extra_args_to_tf_args(
                    constants.DISABLE_UPLOAD_RESULT,
                    constants.LOCAL_BUILD_ID,
                    constants.BUILD_TARGET,
-                   constants.ENABLE_DEVICE_PREPARER,
                    constants.DRY_RUN,
                    constants.VERIFY_ENV_VARIABLE,
                    constants.DEVICE_ONLY):
@@ -1324,29 +1322,14 @@ def get_include_filter(test_infos: List[test_info.TestInfo]) -> List[str]:
         filters = set()
         for test_info_filter in info.data.get(constants.TI_FILTER, []):
             filters.update(test_info_filter.to_set_of_tf_strings())
+
         for test_filter in filters:
-            if re.compile(r'.*#.*\[.*\]').match(test_filter):
-                instrumentation_filters.append(test_filter)
-                # Only pass test_name to --atest-include-filter if the given is
-                # a Java parameterized test.
-                test_filter, _ = test_filter_utils.split_methods(test_filter)
             filter_arg = constants.TF_ATEST_INCLUDE_FILTER_VALUE_FMT.format(
                 test_name=info.test_name,
                 test_filter=test_filter
             )
             tf_args.extend([constants.TF_ATEST_INCLUDE_FILTER, filter_arg])
-    # Customize --test-arg for running Java parameterized tests.
-    if instrumentation_filters:
-        test_filter = ','.join(instrumentation_filters)
-        logging.debug('test_filter=%s', test_filter)
-        tf_args.append(constants.TF_TEST_ARG)
-        tf_args.append(
-            '{tf_class}:{option_name}:{option_value}'.format(
-                tf_class=constants.TF_AND_JUNIT_CLASS,
-                option_name='instrumentation-arg',
-                option_value=f'filter-tests:="{test_filter}"'
-            )
-        )
+
     return tf_args
 
 
