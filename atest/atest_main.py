@@ -25,6 +25,7 @@ atest is designed to support any test types that can be ran by TradeFederation.
 
 # pylint: disable=too-many-lines
 
+from __future__ import annotations
 from __future__ import print_function
 
 import argparse
@@ -36,6 +37,7 @@ import tempfile
 import time
 import platform
 
+from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Set, Tuple
 
 from dataclasses import dataclass
@@ -59,8 +61,7 @@ from atest.metrics import metrics
 from atest.metrics import metrics_base
 from atest.metrics import metrics_utils
 from atest.test_finders import test_finder_utils
-from atest.test_runners import roboleaf_test_runner
-from atest.test_runners.atest_tf_test_runner import AtestTradefedTestRunner
+from atest.test_finders import test_info
 from atest.test_finders.test_info import TestInfo
 from atest.tools import indexing
 from atest.tools import start_avd as avd
@@ -194,7 +195,6 @@ def _parse_args(argv: List[Any]) -> Tuple[argparse.ArgumentParser, List[str]]:
 
     Returns:
         A tuple of an argparse.ArgumentParser class instance holding parsed args
-        and a list of flags which are unsupported by roboleaf mode.
     """
     # Store everything after '--' in custom_args.
     pruned_argv = argv
@@ -211,17 +211,7 @@ def _parse_args(argv: List[Any]) -> Tuple[argparse.ArgumentParser, List[str]]:
             logging.debug('Quoting regex argument %s', arg)
             args.custom_args.append(atest_utils.quote(arg))
 
-    roboleaf_unsupported_flags = []
-    for arg in vars(args):
-        if arg in constants.ROBOLEAF_UNSUPPORTED_FLAGS:
-            flag = constants.ROBOLEAF_UNSUPPORTED_FLAGS[arg]
-            default = parser.get_default(arg)
-            actual = getattr(args, arg)
-            if flag.is_unsupported_func(default, actual):
-                roboleaf_unsupported_flags.append(
-                    f'--{arg}={actual} (default: {default}) {flag.reason}')
-
-    return args, roboleaf_unsupported_flags
+    return args
 
 
 def _configure_logging(verbose: bool, results_dir: str):
@@ -840,51 +830,6 @@ def need_run_index_targets(args: argparse.ArgumentParser):
 
     return True
 
-
-def _b_test(tests, extra_args, results_dir):
-    """Entry point of b test in atest.
-
-    Args:
-        tests: List of tests to pass to `b test`
-        extra_args: An argparse.Namespace class instance holding parsed args.
-        results_dir: A directory which stores the ATest execution information.
-
-    Returns:
-        Exit code.
-    """
-    # Give users a heads up that something has changed.
-    for t in tests.keys():
-        atest_utils.roboleaf_print(
-            f'{t} is Bazel/Roboleaf-compatible.. '
-            f'{atest_utils.mark_green("YES")}')
-    atest_utils.roboleaf_print(
-        'Switching to Bazel.. '
-        f'{atest_utils.mark_green("YES")}')
-    atest_utils.roboleaf_print(
-        'Encountering issues? Opt-out with '
-        f'{atest_utils.mark_yellow("--roboleaf-mode=off")}')
-
-    mod_info = module_info.create_empty()
-    test_start = time.time()
-
-    # Run the bazel test command. This is where the heavy lifting is.
-    tests_exit_code, reporter = test_runner_handler.run_all_tests(
-        results_dir, tests.values(), extra_args, mod_info)
-
-    atest_execution_info.AtestExecutionInfo.result_reporters.append(reporter)
-
-    # TODO(b/296174403): Break down build and test time.
-    #
-    # Bazel handles build and test in the same invocation. So RoboleafTestRunner
-    # "test" time (not full invocation time) might be significantly higher when
-    # comparing with other test runners, since it also includes the time Bazel
-    # takes to build the test(s).
-    metrics.RunTestsFinishEvent(
-        duration=metrics_utils.convert_duration(time.time() - test_start))
-
-    return tests_exit_code
-
-
 def set_build_output_mode(mode: atest_utils.BuildOutputMode):
     """Update environment variable dict accordingly to args.build_output."""
     # Changing this variable does not retrigger builds.
@@ -977,16 +922,13 @@ def setup_metrics_tool_name(no_metrics: bool = False):
 def main(
     argv: List[Any],
     results_dir: str,
-    args: argparse.Namespace,
-    roboleaf_unsupported_flags: List[str]):
+    args: argparse.Namespace):
     """Entry point of atest script.
 
     Args:
         argv: A list of arguments.
         results_dir: A directory which stores the ATest execution information.
         args: An argparse.Namespace class instance holding parsed args.
-        roboleaf_unsupported_flags: A list of flags which are unsupported by
-                                    roboleaf mode.
 
     Returns:
         Exit code.
@@ -1007,23 +949,8 @@ def main(
     proc_acloud, report_file = _get_acloud_proc_and_log(args, results_dir)
     is_clean = not os.path.exists(
         os.environ.get(constants.ANDROID_PRODUCT_OUT, ''))
-    extra_args = get_extra_args(args)
-    verify_env_variables = extra_args.get(constants.VERIFY_ENV_VARIABLE, False)
 
-    # Check if we can run all tests with bazel early in the atest runtime and
-    # skip all of the standard atest logic.
-    #
-    # Bazel handles a lot of the heavy lifting that atest standard mode does,
-    # like building the build modules and running tradefed. That said. Bazel
-    # does not fully support every atest flag -- not every one of them will
-    # make sense when Bazel is handling both build and test.
-    b_supported_tests = roboleaf_test_runner.are_all_tests_supported(
-        args.roboleaf_mode, args.tests, roboleaf_unsupported_flags)
-    if b_supported_tests:
-        # Use Bazel for both building and testing and return early.
-        return _b_test(b_supported_tests, extra_args, results_dir)
-
-    # This is where standard atest begins.
+    verify_env_variables = args.verify_env_variable
 
     # Run Test Mapping or coverage by no-bazel-mode.
     if atest_utils.is_test_mapping(args) or args.experimental_coverage:
@@ -1076,66 +1003,20 @@ def main(
     if not test_infos:
         return ExitCode.TEST_NOT_FOUND
 
-    # Reuse ATest's finders to resolve the input test identifiers and get
-    # the test module names. If all test modules are supported by Roboleaf
-    # mode, we'll delegate to Roboleaf mode.
-    # TODO(b/296940736): Use TestInfo.raw_test_name after supporting
-    #  Mainline modules.
-    test_names = [t.test_name for t in test_infos]
-    # Avoid checking twice.
-    if set(test_names) != set(args.tests):
-        test_name_to_filters = collections.defaultdict(set)
-        for t in test_infos:
-            filters = test_name_to_filters[t.test_name]
-            filters |= t.data.get(constants.TI_FILTER, set())
+    test_execution_plan = _create_test_execution_plan(
+        test_infos = test_infos,
+        results_dir = results_dir,
+        mod_info = mod_info,
+        args = args,
+        dry_run=any(dry_run_args))
 
-        b_supported_tests = roboleaf_test_runner.are_all_tests_supported(
-            args.roboleaf_mode,
-            test_names,
-            roboleaf_unsupported_flags,
-            {t: AtestTradefedTestRunner.flatten_test_filters(
-                test_name_to_filters.get(t)) for t in test_name_to_filters}
-        )
-        if b_supported_tests:
-            atest_utils.roboleaf_print(
-                f'{atest_utils.mark_yellow("TIP")}: Directly '
-                "specify the module name to avoid test finder overhead.")
-            metrics.LocalDetectEvent(
-                detect_type=DetectType.ROBOLEAF_NON_MODULE_FINDER,
-                result=DetectType.ROBOLEAF_NON_MODULE_FINDER,
-            )
-            # Use Bazel for both building and testing and return early.
-            return _b_test(b_supported_tests, extra_args, results_dir)
-
-    if not is_from_test_mapping(test_infos):
-        if not (any(dry_run_args) or verify_env_variables):
-            _validate_exec_mode(args, test_infos)
-            # _validate_exec_mode appends --host automatically when pure
-            # host-side tests, so re-parsing extra_args is a must.
-            extra_args = get_extra_args(args)
-    else:
-        _validate_tm_tests_exec_mode(args, test_infos)
-
-    # TODO: change to another approach that put constants.CUSTOM_ARGS in the
-    # end of command to make sure that customized args can override default
-    # options.
-    # For TEST_MAPPING, set timeout to 600000ms.
-    custom_timeout = False
-    for custom_args in args.custom_args:
-        if '-timeout' in custom_args:
-            custom_timeout = True
-    if args.test_timeout is None and not custom_timeout:
-        if is_from_test_mapping(test_infos):
-            extra_args.update({constants.TEST_TIMEOUT: 600000})
-            logging.debug(
-                'Set test timeout to %sms to align it in TEST_MAPPING.',
-                extra_args.get(constants.TEST_TIMEOUT))
+    extra_args = test_execution_plan.extra_args
 
     if args.info:
         return _print_test_info(mod_info, test_infos)
 
-    build_targets = test_runner_handler.get_test_runner_reqs(
-        mod_info, test_infos, extra_args=extra_args)
+    build_targets = test_execution_plan.required_build_targets()
+
     # Remove MODULE-IN-* from build targets by default.
     if not args.use_modules_in:
         build_targets = _exclude_modules_in_targets(build_targets)
@@ -1208,14 +1089,9 @@ def main(
             metrics.LocalDetectEvent(
                 detect_type=DetectType.INIT_AND_FIND_MS,
                 result=int(_init_and_find*1000))
-        if not is_from_test_mapping(test_infos):
-            tests_exit_code, reporter = test_runner_handler.run_all_tests(
-                results_dir, test_infos, extra_args, mod_info)
-            (atest_execution_info.AtestExecutionInfo
-             .result_reporters.append(reporter))
-        else:
-            tests_exit_code = _run_test_mapping_tests(
-                results_dir, test_infos, extra_args, mod_info)
+
+        tests_exit_code = test_execution_plan.execute()
+
         if args.experimental_coverage:
             coverage.generate_coverage_report(results_dir, test_infos, mod_info)
     metrics.RunTestsFinishEvent(
@@ -1232,6 +1108,191 @@ def main(
         tests_exit_code = ExitCode.TEST_FAILURE
 
     return tests_exit_code
+
+
+def _create_test_execution_plan(
+    *,
+    test_infos: List[test_info.TestInfo],
+    results_dir: str,
+    mod_info: module_info.ModuleInfo,
+    args: argparse.Namespace,
+    dry_run: bool) -> TestExecutionPlan:
+    """Creates a plan to execute the tests.
+
+    Args:
+        test_infos: A list of instances of TestInfo.
+        results_dir: A directory which stores the ATest execution information.
+        mod_info: An instance of ModuleInfo.
+        args: An argparse.Namespace instance holding parsed args.
+        dry_run: A boolean of whether this invocation is a dry run.
+
+    Returns:
+        An instance of TestExecutionPlan.
+    """
+
+    if is_from_test_mapping(test_infos):
+        return TestMappingExecutionPlan.create(
+            test_infos = test_infos,
+            results_dir = results_dir,
+            mod_info = mod_info,
+            args = args)
+
+    return TestModuleExecutionPlan.create(
+        test_infos = test_infos,
+        results_dir = results_dir,
+        mod_info = mod_info,
+        args = args,
+        dry_run=dry_run)
+
+
+class TestExecutionPlan(ABC):
+    """Represents how an Atest invocation's tests will execute."""
+
+    def __init__(
+        self,
+        *,
+        test_infos: List[test_info.TestInfo],
+        mod_info: module_info.ModuleInfo,
+        extra_args: Dict[str, Any],
+    ):
+        self._test_infos = test_infos
+        self._mod_info = mod_info
+        self._extra_args = extra_args
+
+    @property
+    def extra_args(self) -> Dict[str, Any]:
+        return self._extra_args
+
+    @abstractmethod
+    def execute(self) -> ExitCode:
+        """Executes all test runner invocations in this plan."""
+
+    def required_build_targets(self) -> Set[str]:
+        """Returns the list of build targets required by this plan."""
+        return test_runner_handler.get_test_runner_reqs(
+            self._mod_info, self._test_infos, extra_args=self._extra_args)
+
+
+class TestMappingExecutionPlan(TestExecutionPlan):
+    """A plan to execute Test Mapping tests."""
+
+    def __init__(
+        self,
+        *,
+        test_infos: List[test_info.TestInfo],
+        results_dir: str,
+        mod_info: module_info.ModuleInfo,
+        extra_args: Dict[str, Any],
+    ):
+        super().__init__(
+            test_infos=test_infos, mod_info=mod_info, extra_args=extra_args)
+
+        self._results_dir = results_dir
+
+    @staticmethod
+    def create(
+        *,
+        test_infos: List[test_info.TestInfo],
+        results_dir: str,
+        mod_info: module_info.ModuleInfo,
+        args: argparse.Namespace) -> TestMappingExecutionPlan:
+        """Creates an instance of TestMappingExecutionPlan.
+
+        Args:
+            test_infos: A list of instances of TestInfo.
+            results_dir: A directory which stores the ATest execution information.
+            mod_info: An instance of ModuleInfo.
+            args: An argparse.Namespace instance holding parsed args.
+
+        Returns:
+            An instance of TestMappingExecutionPlan.
+        """
+
+        _validate_tm_tests_exec_mode(args, test_infos)
+        extra_args = get_extra_args(args)
+
+        # TODO: change to another approach that put constants.CUSTOM_ARGS in the
+        # end of command to make sure that customized args can override default
+        # options.
+        # For TEST_MAPPING, set timeout to 600000ms.
+        custom_timeout = False
+        for custom_args in args.custom_args:
+            if '-timeout' in custom_args:
+                custom_timeout = True
+
+        if args.test_timeout is None and not custom_timeout:
+            extra_args.update({constants.TEST_TIMEOUT: 600000})
+            logging.debug(
+                'Set test timeout to %sms to align it in TEST_MAPPING.',
+                extra_args.get(constants.TEST_TIMEOUT))
+
+        return TestMappingExecutionPlan(
+            test_infos = test_infos,
+            results_dir = results_dir,
+            mod_info = mod_info,
+            extra_args = extra_args)
+
+    def execute(self) -> ExitCode:
+        return _run_test_mapping_tests(
+            self._results_dir, self._test_infos, self._extra_args, self._mod_info)
+
+
+class TestModuleExecutionPlan(TestExecutionPlan):
+    """A plan to execute the test modules explicitly passed on the command-line."""
+
+    def __init__(
+        self,
+        *,
+        test_infos: List[test_info.TestInfo],
+        results_dir: str,
+        mod_info: module_info.ModuleInfo,
+        extra_args: Dict[str, Any],
+    ):
+        super().__init__(
+            test_infos=test_infos, mod_info=mod_info, extra_args=extra_args)
+
+        self._results_dir = results_dir
+
+    @staticmethod
+    def create(
+        *,
+        test_infos: List[test_info.TestInfo],
+        results_dir: str,
+        mod_info: module_info.ModuleInfo,
+        args: argparse.Namespace,
+        dry_run: bool) -> TestModuleExecutionPlan:
+        """Creates an instance of TestModuleExecutionPlan.
+
+        Args:
+            test_infos: A list of instances of TestInfo.
+            results_dir: A directory which stores the ATest execution information.
+            mod_info: An instance of ModuleInfo.
+            args: An argparse.Namespace instance holding parsed args.
+            dry_run: A boolean of whether this invocation is a dry run.
+
+        Returns:
+            An instance of TestModuleExecutionPlan.
+        """
+
+        if not (dry_run or args.verify_env_variable):
+            _validate_exec_mode(args, test_infos)
+
+        # _validate_exec_mode appends --host automatically when pure
+        # host-side tests, so re-parsing extra_args is a must.
+        extra_args = get_extra_args(args)
+
+        return TestModuleExecutionPlan(
+            test_infos = test_infos,
+            results_dir = results_dir,
+            mod_info = mod_info,
+            extra_args = extra_args)
+
+    def execute(self) -> ExitCode:
+        tests_exit_code, reporter = test_runner_handler.run_all_tests(
+            self._results_dir, self._test_infos, self._extra_args, self._mod_info)
+        atest_execution_info.AtestExecutionInfo.result_reporters.append(reporter)
+        return tests_exit_code
+
 
 if __name__ == '__main__':
     RESULTS_DIR = make_test_run_dir()
@@ -1254,8 +1315,7 @@ if __name__ == '__main__':
     else:
         metrics.LocalDetectEvent(
             detect_type=DetectType.ATEST_CONFIG, result=0)
-    (atest_configs.GLOBAL_ARGS,
-     roboleaf_unsupported_flags) = _parse_args(final_args)
+    atest_configs.GLOBAL_ARGS = _parse_args(final_args)
     with atest_execution_info.AtestExecutionInfo(
             final_args, RESULTS_DIR,
             atest_configs.GLOBAL_ARGS) as result_file:
@@ -1265,7 +1325,6 @@ if __name__ == '__main__':
             final_args,
             RESULTS_DIR,
             atest_configs.GLOBAL_ARGS,
-            roboleaf_unsupported_flags
         )
         DETECTOR = bug_detector.BugDetector(final_args, EXIT_CODE)
         if EXIT_CODE not in EXIT_CODES_BEFORE_TEST:
