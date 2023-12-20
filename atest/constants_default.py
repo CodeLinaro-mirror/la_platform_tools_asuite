@@ -20,7 +20,9 @@ Various globals used by atest.
 
 import os
 import re
+import tempfile
 from collections import namedtuple
+from pathlib import Path
 
 MODE = 'DEFAULT'
 
@@ -192,7 +194,6 @@ BOTH_TEST = 'both'
 
 # Metrics
 NO_METRICS_ARG = '--no-metrics'
-METRICS_URL = 'http://asuite-218222.appspot.com/atest/metrics'
 EXTERNAL = 'EXTERNAL_RUN'
 INTERNAL = 'INTERNAL_RUN'
 INTERNAL_EMAIL = '@google.com'
@@ -265,7 +266,7 @@ QCLASS_OUTPUT_RE = re.compile(r'(?P<java_path>.*/(?P<class>[A-Z]\w+)\.\w+)'
 PACKAGE_OUTPUT_RE = re.compile(r'(?P<java_dir>/.*/).*[.](java|kt)[:]\s*package\s+'
                                r'(?P<package>[^(;|\s)]+)\s*')
 
-ATEST_RESULT_ROOT = '/tmp/atest_result'
+ATEST_RESULT_ROOT = Path(tempfile.gettempdir(), 'atest_result')
 ATEST_TEST_RECORD_PROTO = 'test_record.proto'
 LATEST_RESULT_FILE = os.path.join(ATEST_RESULT_ROOT, 'LATEST', 'test_result')
 
