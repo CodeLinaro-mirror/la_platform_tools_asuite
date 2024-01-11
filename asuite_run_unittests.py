@@ -30,6 +30,7 @@ import sys
 ASUITE_HOME = os.path.dirname(os.path.realpath(__file__))
 ASUITE_PLUGIN_PATH = os.path.join(ASUITE_HOME, "asuite_plugin")
 # Temporarily running full module testing for atest due to b/248507158.
+ATEST_CMD = "atest atest_unittests --host"
 AIDEGEN_CMD = "atest aidegen_unittests --host"
 PLUGIN_LIB_CMD = "atest plugin_lib_unittests --host"
 GRADLE_TEST = "/gradlew test"
@@ -49,9 +50,7 @@ def run_unittests(files):
     cmd_dict = {}
     for f in files:
         if 'atest' in f:
-            # No need to run "atest atest_unittests --host"
-            # because it's already in presubmit.
-            pass
+            cmd_dict.update({ATEST_CMD: None})
         if 'aidegen' in f:
             cmd_dict.update({AIDEGEN_CMD: None})
         if 'plugin_lib' in f:
