@@ -25,7 +25,6 @@ import unittest
 from unittest import mock
 
 from atest import atest_error
-from atest import device_update
 from atest import module_info
 from atest import test_runner_handler
 from atest import unittest_constants as uc
@@ -124,8 +123,7 @@ class TestRunnerHandlerUnittests(unittest.TestCase):
             results_dir = '',
             mod_info = empty_module_info,
             extra_args = {},
-            minimal_build = True,
-            update_device = False)
+            minimal_build = True)
 
         build_targets = set()
         for invocation in invocations:
@@ -143,8 +141,7 @@ class TestRunnerHandlerUnittests(unittest.TestCase):
         invocation = test_runner_handler.TestRunnerInvocation(
             test_infos=test_infos,
             test_runner=FakeTestRunnerA(results_dir),
-            extra_args=extra_args,
-            update_method=device_update.NoopUpdateMethod())
+            extra_args=extra_args)
 
         exit_code = invocation.run_all_tests(mock.MagicMock())
 
@@ -158,8 +155,7 @@ class TestRunnerHandlerUnittests(unittest.TestCase):
         invocation = test_runner_handler.TestRunnerInvocation(
             test_infos=test_infos,
             test_runner=FakeTestRunnerB(results_dir),
-            extra_args=extra_args,
-            update_method=device_update.NoopUpdateMethod())
+            extra_args=extra_args)
 
         exit_code = invocation.run_all_tests(mock.MagicMock())
 
