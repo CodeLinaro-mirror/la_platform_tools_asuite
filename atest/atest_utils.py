@@ -63,9 +63,11 @@ from atest.tf_proto import test_record_pb2
 _BASH_RESET_CODE = '\033[0m\n'
 DIST_OUT_DIR = Path(os.environ.get(constants.ANDROID_BUILD_TOP, os.getcwd())
                     + '/out/dist/')
-MAINLINE_MODULES_EXT_RE = re.compile(r'(.apex|.apks|.apk)$')
+MAINLINE_MODULES_EXT_RE = re.compile(r'\.(apex|apks|apk)$')
+TEST_WITH_MAINLINE_MODULES_RE = re.compile(r'(?P<test>.*)\[(?P<mainline_modules>.*'
+                                           r'[.](apk|apks|apex))\]$')
 
-# Arbitrary number to limit stdout for failed runs in _run_limited_output.
+# Arbitrary number to limit stdout for failed runs in run_limited_output.
 # Reason for its use is that the make command itself has its own carriage
 # return output mechanism that when collected line by line causes the streaming
 # full_output list to be extremely large.
@@ -74,10 +76,6 @@ _FAILED_OUTPUT_LINE_LIMIT = 100
 # ex: [ 99% 39710/39711]
 _BUILD_COMPILE_STATUS = re.compile(r'\[\s*(\d{1,3}%\s+)?\d+/\d+\]')
 _BUILD_FAILURE = 'FAILED: '
-CMD_RESULT_PATH = os.path.join(os.environ.get(constants.ANDROID_BUILD_TOP,
-                                              os.getcwd()),
-                               'tools/asuite/atest/test_data',
-                               'test_commands.json')
 BUILD_TOP_HASH = hashlib.md5(os.environ.get(constants.ANDROID_BUILD_TOP, '').
                              encode()).hexdigest()
 _DEFAULT_TERMINAL_WIDTH = 80
@@ -265,7 +263,7 @@ def _capture_limited_output(full_log):
 
 
 # TODO: b/187122993 refine subprocess with 'with-statement' in fixit week.
-def _run_limited_output(cmd, env_vars=None):
+def run_limited_output(cmd, env_vars=None):
     """Runs a given command and streams the output on a single line in stdout.
 
     Args:
@@ -305,16 +303,8 @@ def _run_limited_output(cmd, env_vars=None):
         # returncode.
         proc.wait()
         if proc.returncode != 0:
-            # get error log from "OUT_DIR/error.log"
-            error_log_file = get_build_out_dir('error.log')
-            output = []
-            if error_log_file.is_file():
-                if error_log_file.stat().st_size > 0:
-                    with open(error_log_file, encoding='utf-8') as f:
-                        output = f.read()
-            if not output:
-                output = _capture_limited_output(full_output)
-            raise subprocess.CalledProcessError(proc.returncode, cmd, output)
+            raise subprocess.CalledProcessError(
+                proc.returncode, cmd, full_output)
 
 
 def get_build_out_dir(*joinpaths) -> Path:
@@ -381,6 +371,33 @@ def build(build_targets: Set[str]):
     return _run_build_cmd(cmd, _BUILD_ENV)
 
 
+def _run_build_cmd_with_limited_output(
+    cmd: List[str], env_vars: Dict[str, str]=None) -> None:
+    """Runs the build command and streams the output on a single line in stdout.
+
+    Args:
+        cmd: A list of strings representing the command to run.
+        env_vars: Optional arg. Dict of env vars to set during build.
+
+    Raises:
+        subprocess.CalledProcessError: When the command exits with a non-0
+            exitcode.
+    """
+    try:
+        run_limited_output(cmd, env_vars=env_vars)
+    except subprocess.CalledProcessError as e:
+        # get error log from "OUT_DIR/error.log"
+        error_log_file = get_build_out_dir('error.log')
+        output = []
+        if error_log_file.is_file():
+            if error_log_file.stat().st_size > 0:
+                with open(error_log_file, encoding='utf-8') as f:
+                    output = f.read()
+        if not output:
+            output = _capture_limited_output(e.output)
+        raise subprocess.CalledProcessError(e.returncode, e.cmd, output)
+
+
 def _run_build_cmd(cmd: List[str], env_vars: Dict[str, str]):
     """The main process of building targets.
 
@@ -407,7 +424,7 @@ def _run_build_cmd(cmd: List[str], env_vars: Dict[str, str]):
                   'mode; check {} for detail after build finishes.)'.format(
                     mark_cyan(f'{log_path}')
                   ), end='')
-            _run_limited_output(cmd, env_vars=env_vars)
+            _run_build_cmd_with_limited_output(cmd, env_vars=env_vars)
         _send_build_condition_metrics(build_profiler, cmd)
         logging.info('Build successful')
         return True
@@ -432,6 +449,16 @@ def get_result_server_args(for_test_mapping=False):
 def sort_and_group(iterable, key):
     """Sort and group helper function."""
     return itertools.groupby(sorted(iterable, key=key), key=key)
+
+
+def is_supported_mainline_module(installed_path: str) -> re.Match:
+    """Determine whether the given path is supported."""
+    return re.search(MAINLINE_MODULES_EXT_RE, installed_path)
+
+
+def get_test_and_mainline_modules(test_name: str) -> re.Match:
+    """Return test name and mainline modules from the given test."""
+    return TEST_WITH_MAINLINE_MODULES_RE.match(test_name)
 
 
 def is_test_mapping(args):
@@ -568,10 +595,6 @@ def colorful_print(text, color, bp_color=None, auto_wrap=True):
     else:
         print(output, end="")
 
-def roboleaf_print(text):
-    """Print roboleaf emoji with text."""
-    print("[🌿] " + text)
-
 def get_terminal_size():
     """Get terminal size and return a tuple.
 
@@ -586,13 +609,14 @@ def get_terminal_size():
     return columns, rows
 
 
-def handle_test_runner_cmd(input_test, test_cmds, do_verification=False,
+def handle_test_runner_cmd(input_test, dry_run_cmds, do_verification=False,
                            result_path=constants.VERIFY_DATA_PATH):
     """Handle the runner command of input tests.
 
     Args:
-        input_test: A string of input tests pass to atest.
-        test_cmds: A list of strings for running input tests.
+        input_test: The name of a test.
+        dry_run_cmds: A list of strings which make up the command for running
+        the input test.
         do_verification: A boolean to indicate the action of this method.
                          True: Do verification without updating result map and
                                raise DryRunVerificationError if verifying fails.
@@ -603,9 +627,9 @@ def handle_test_runner_cmd(input_test, test_cmds, do_verification=False,
     """
     full_result_content = load_json_safely(result_path)
     former_test_cmds = full_result_content.get(input_test, [])
-    test_cmds = _normalize(test_cmds)
+    dry_run_cmds = _normalize(dry_run_cmds)
     former_test_cmds = _normalize(former_test_cmds)
-    if not _are_identical_cmds(test_cmds, former_test_cmds):
+    if not _are_identical_cmds(dry_run_cmds, former_test_cmds):
         if do_verification:
             raise atest_error.DryRunVerificationError(
                 'Dry run verification failed, former commands: {}'.format(
@@ -614,7 +638,7 @@ def handle_test_runner_cmd(input_test, test_cmds, do_verification=False,
             # If former_test_cmds is different from test_cmds, ask users if they
             # are willing to update the result.
             print('Former cmds = %s' % former_test_cmds)
-            print('Current cmds = %s' % test_cmds)
+            print('Current cmds = %s' % dry_run_cmds)
             if not prompt_with_yn_result('Do you want to update former result '
                                          'to the latest one?', True):
                 print('SKIP updating result!!!')
@@ -623,7 +647,7 @@ def handle_test_runner_cmd(input_test, test_cmds, do_verification=False,
         # If current commands are the same as the formers, no need to update
         # result.
         return
-    full_result_content[input_test] = test_cmds
+    full_result_content[input_test] = dry_run_cmds
     with open(result_path, 'w', encoding='utf-8') as outfile:
         json.dump(full_result_content, outfile, indent=0)
         print('Save result mapping to %s' % result_path)
@@ -1184,9 +1208,11 @@ def get_manifest_branch(show_aosp=False):
 
 def get_build_target():
     """Get the build target form system environment TARGET_PRODUCT."""
-    build_target = '%s-%s' % (
+    build_target = '%s-%s-%s' % (
         os.getenv(constants.ANDROID_TARGET_PRODUCT, None),
-        os.getenv(constants.TARGET_BUILD_VARIANT, None))
+        os.getenv('TARGET_RELEASE', None),
+        os.getenv(constants.TARGET_BUILD_VARIANT, None),
+    )
     return build_target
 
 
@@ -1730,7 +1756,7 @@ def has_mixed_type_filters(test_infos):
         filters = test_info.data.get(constants.TI_FILTER, [])
         filter_types = set()
         for flt in filters:
-            filter_types |= get_filter_types(flt.to_set_of_tf_strings())
+            filter_types |= get_filter_types(flt.to_list_of_tf_strings())
         filter_types |= test_to_types.get(test_info.test_name, set())
         test_to_types[test_info.test_name] = filter_types
     for _, types in test_to_types.items():
@@ -1742,7 +1768,7 @@ def get_filter_types(tf_filter_set):
     """ Get filter types.
 
     Args:
-        tf_filter_set: A set of tf filter strings.
+        tf_filter_set: A list of tf filter strings.
 
     Returns:
         A set of FilterType.
@@ -2061,13 +2087,14 @@ def get_rbe_and_customized_out_state() -> int:
 
 def build_files_integrity_is_ok() -> bool:
     """Return Whether the integrity of build files is OK."""
-    # 0. Inexistence of the timestamp file means a fresh repo sync.
+    # 0. Inexistence of the timestamp or plocate.db means a fresh repo sync.
     timestamp_file = get_index_path(constants.BUILDFILES_STP)
-    if not timestamp_file.is_file():
+    locate_cache = get_index_path(constants.LOCATE_CACHE)
+    if not all((timestamp_file.is_file(), locate_cache.is_file())):
         return False
+
     # 1. Ensure no build files were added/deleted.
     recorded_amount = len(load_json_safely(timestamp_file).keys())
-    locate_cache = get_index_path(constants.LOCATE_CACHE)
     cmd = (f'locate -e -d{locate_cache} --regex '
             r'"/Android\.(bp|mk)$" | wc -l')
     if int(subprocess.getoutput(cmd)) != recorded_amount:

@@ -28,6 +28,7 @@ import tempfile
 from importlib import reload
 from io import StringIO
 from unittest import mock
+from pyfakefs import fake_filesystem_unittest
 
 from atest import atest_arg_parser
 from atest import atest_utils
@@ -68,16 +69,16 @@ HOST_OUT_DIR = os.path.join(BUILD_TOP_DIR, 'out/host/linux-x86')
 def gettestinfos_side_effect(test_names, test_mapping_test_details=None,
                              is_rebuild_module_info=False):
     """Mock return values for _get_test_info."""
-    test_infos = set()
+    test_infos = []
     for test_name in test_names:
         if test_name == uc.MODULE_NAME:
-            test_infos.add(uc.MODULE_INFO)
+            test_infos.append(uc.MODULE_INFO)
         if test_name == uc.CLASS_NAME:
-            test_infos.add(uc.CLASS_INFO)
+            test_infos.append(uc.CLASS_INFO)
         if test_name == uc.HOST_UNIT_TEST_NAME_1:
-            test_infos.add(uc.MODULE_INFO_HOST_1)
+            test_infos.append(uc.MODULE_INFO_HOST_1)
         if test_name == uc.HOST_UNIT_TEST_NAME_2:
-            test_infos.add(uc.MODULE_INFO_HOST_2)
+            test_infos.append(uc.MODULE_INFO_HOST_2)
     return test_infos
 
 
@@ -130,24 +131,24 @@ class CLITranslatorUnittests(unittest.TestCase):
         mult_test = [uc.MODULE_NAME, uc.CLASS_NAME]
 
         # Let's make sure we return what we expect.
-        expected_test_infos = {uc.MODULE_INFO}
+        expected_test_infos = [uc.MODULE_INFO]
         mock_getfindmethods.return_value = [
             test_finder_base.Finder(None, find_method_return_module_info, None)]
-        unittest_utils.assert_strict_equal(
+        unittest_utils.assert_equal_testinfo_lists(
             self, ctr._get_test_infos(one_test), expected_test_infos)
 
         # Check we receive multiple test infos.
-        expected_test_infos = {uc.MODULE_INFO, uc.CLASS_INFO}
+        expected_test_infos = [uc.MODULE_INFO, uc.CLASS_INFO]
         mock_getfindmethods.return_value = [
             test_finder_base.Finder(None, find_method_return_module_class_info,
                                     None)]
-        unittest_utils.assert_strict_equal(
+        unittest_utils.assert_equal_testinfo_lists(
             self, ctr._get_test_infos(mult_test), expected_test_infos)
 
         # Check return null set when we have no tests found or multiple results.
         mock_getfindmethods.return_value = [
             test_finder_base.Finder(None, find_method_return_nothing, None)]
-        null_test_info = set()
+        null_test_info = []
         mock_getfuzzyresults.return_value = []
         self.assertEqual(null_test_info, ctr._get_test_infos(one_test))
         self.assertEqual(null_test_info, ctr._get_test_infos(mult_test))
@@ -158,19 +159,19 @@ class CLITranslatorUnittests(unittest.TestCase):
             test_finder_base.Finder(None, find_method_return_module_info, None)]
         mock_getfuzzyresults.return_value = one_test
         mock_findtestbymodule.return_value = uc.MODULE_INFO
-        unittest_utils.assert_strict_equal(
-            self, ctr._get_test_infos([uc.TYPO_MODULE_NAME]), {uc.MODULE_INFO})
+        unittest_utils.assert_equal_testinfo_lists(
+            self, ctr._get_test_infos([uc.TYPO_MODULE_NAME]), [uc.MODULE_INFO])
 
         # Check the method works for test mapping.
         test_detail1 = test_mapping.TestDetail(uc.TEST_MAPPING_TEST)
         test_detail2 = test_mapping.TestDetail(uc.TEST_MAPPING_TEST_WITH_OPTION)
-        expected_test_infos = {uc.MODULE_INFO, uc.CLASS_INFO}
+        expected_test_infos = [uc.MODULE_INFO, uc.CLASS_INFO]
         mock_getfindmethods.return_value = [
             test_finder_base.Finder(None, find_method_return_module_class_info,
                                     None)]
         test_infos = ctr._get_test_infos(
             mult_test, [test_detail1, test_detail2])
-        unittest_utils.assert_strict_equal(
+        unittest_utils.assert_equal_testinfo_lists(
             self, test_infos, expected_test_infos)
         for test_info in test_infos:
             if test_info == uc.MODULE_INFO:
@@ -196,31 +197,31 @@ class CLITranslatorUnittests(unittest.TestCase):
         one_test = [uc.MODULE_NAME]
         mult_test = [uc.MODULE_NAME, uc.CLASS_NAME]
         # Let's make sure we return what we expect.
-        expected_test_infos = {uc.MODULE_INFO, uc.MODULE_INFO2}
+        expected_test_infos = [uc.MODULE_INFO, uc.MODULE_INFO2]
         mock_getfindmethods.return_value = [
             test_finder_base.Finder(None, find_method_return_module_info2,
                                     None)]
-        unittest_utils.assert_strict_equal(
+        unittest_utils.assert_equal_testinfo_lists(
             self, ctr._get_test_infos(one_test), expected_test_infos)
         # Check we receive multiple test infos.
-        expected_test_infos = {uc.MODULE_INFO, uc.CLASS_INFO, uc.MODULE_INFO2,
-                               uc.CLASS_INFO2}
+        expected_test_infos = [uc.MODULE_INFO, uc.MODULE_INFO2, uc.CLASS_INFO,
+                               uc.CLASS_INFO2]
         mock_getfindmethods.return_value = [
             test_finder_base.Finder(None, find_method_ret_mod_cls_info2,
                                     None)]
-        unittest_utils.assert_strict_equal(
+        unittest_utils.assert_equal_testinfo_lists(
             self, ctr._get_test_infos(mult_test), expected_test_infos)
         # Check the method works for test mapping.
         test_detail1 = test_mapping.TestDetail(uc.TEST_MAPPING_TEST)
         test_detail2 = test_mapping.TestDetail(uc.TEST_MAPPING_TEST_WITH_OPTION)
-        expected_test_infos = {uc.MODULE_INFO, uc.CLASS_INFO, uc.MODULE_INFO2,
-                               uc.CLASS_INFO2}
+        expected_test_infos = [uc.MODULE_INFO, uc.MODULE_INFO2, uc.CLASS_INFO,
+                               uc.CLASS_INFO2]
         mock_getfindmethods.return_value = [
             test_finder_base.Finder(None, find_method_ret_mod_cls_info2,
                                     None)]
         test_infos = ctr._get_test_infos(
             mult_test, [test_detail1, test_detail2])
-        unittest_utils.assert_strict_equal(
+        unittest_utils.assert_equal_testinfo_lists(
             self, test_infos, expected_test_infos)
         for test_info in test_infos:
             if test_info in [uc.MODULE_INFO, uc.MODULE_INFO2]:
@@ -241,10 +242,10 @@ class CLITranslatorUnittests(unittest.TestCase):
         mod_info = module_info.load_from_file(
             module_file=os.path.join(uc.TEST_DATA_DIR, uc.JSON_FILE))
         ctr = cli_t.CLITranslator(mod_info=mod_info)
-        null_test_info = set()
+        null_test_info = []
         mock_getfindmethods.return_value = []
         mock_getfuzzyresults.return_value = []
-        unittest_utils.assert_strict_equal(
+        unittest_utils.assert_equal_testinfo_lists(
             self, ctr._get_test_infos('not_exist_module'), null_test_info)
 
     @mock.patch.object(test_finder_utils, 'find_host_unit_tests',
@@ -261,7 +262,7 @@ class CLITranslatorUnittests(unittest.TestCase):
             self,
             _gather_build_targets(test_infos),
             uc.CLASS_BUILD_TARGETS)
-        unittest_utils.assert_strict_equal(self, test_infos, {uc.CLASS_INFO})
+        unittest_utils.assert_equal_testinfo_lists(self, test_infos, [uc.CLASS_INFO])
 
     @mock.patch.object(test_finder_utils, 'find_host_unit_tests',
                        return_value=set())
@@ -277,8 +278,8 @@ class CLITranslatorUnittests(unittest.TestCase):
             self,
             _gather_build_targets(test_infos),
             uc.MODULE_CLASS_COMBINED_BUILD_TARGETS)
-        unittest_utils.assert_strict_equal(self, test_infos, {uc.MODULE_INFO,
-                                                              uc.CLASS_INFO})
+        unittest_utils.assert_equal_testinfo_lists(self, test_infos, [uc.MODULE_INFO,
+                                                              uc.CLASS_INFO])
 
     @mock.patch.object(os, 'getcwd', return_value='/src/build_top/somewhere')
     @mock.patch.object(test_finder_utils, 'find_host_unit_tests', return_value=[])
@@ -300,8 +301,8 @@ class CLITranslatorUnittests(unittest.TestCase):
             self,
             _gather_build_targets(test_infos),
             uc.MODULE_CLASS_COMBINED_BUILD_TARGETS)
-        unittest_utils.assert_strict_equal(self, test_infos, {uc.MODULE_INFO,
-                                                              uc.CLASS_INFO})
+        unittest_utils.assert_equal_testinfo_lists(self, test_infos, [uc.MODULE_INFO,
+                                                              uc.CLASS_INFO])
 
     @mock.patch.object(cli_t.CLITranslator, '_find_tests_by_test_mapping')
     @mock.patch.object(cli_t.CLITranslator, '_get_test_infos',
@@ -320,8 +321,8 @@ class CLITranslatorUnittests(unittest.TestCase):
             self,
             _gather_build_targets(test_infos),
             uc.MODULE_CLASS_COMBINED_BUILD_TARGETS)
-        unittest_utils.assert_strict_equal(self, test_infos, {uc.MODULE_INFO,
-                                                              uc.CLASS_INFO})
+        unittest_utils.assert_equal_testinfo_lists(self, test_infos, [uc.MODULE_INFO,
+                                                              uc.CLASS_INFO])
 
     def test_find_tests_by_test_mapping_presubmit(self):
         """Test _find_tests_by_test_mapping method to locate presubmit tests."""
@@ -470,12 +471,13 @@ class CLITranslatorUnittests(unittest.TestCase):
         self.args.host = False
         self.args.host_unit_test_only = False
         test_infos = self.ctr.translate(self.args)
-        unittest_utils.assert_strict_equal(self,
-                                           test_infos,
-                                           {uc.MODULE_INFO,
-                                            uc.CLASS_INFO,
-                                            uc.MODULE_INFO_HOST_1,
-                                            uc.MODULE_INFO_HOST_2})
+        unittest_utils.assert_equal_testinfo_lists(
+            self,
+            test_infos,
+            [uc.MODULE_INFO,
+            uc.CLASS_INFO,
+            uc.MODULE_INFO_HOST_1,
+            uc.MODULE_INFO_HOST_2])
 
     @mock.patch.object(test_finder_utils, 'find_host_unit_tests',
                        return_value=[uc.HOST_UNIT_TEST_NAME_1,
@@ -496,10 +498,10 @@ class CLITranslatorUnittests(unittest.TestCase):
         self.args.test_mapping = True
         self.args.host_unit_test_only = False
         test_infos = self.ctr.translate(self.args)
-        unittest_utils.assert_strict_equal(
+        unittest_utils.assert_equal_testinfo_lists(
             self,
             test_infos,
-            {uc.MODULE_INFO, uc.CLASS_INFO})
+            [uc.MODULE_INFO, uc.CLASS_INFO])
 
 
 class ParseTestIdentifierTest(unittest.TestCase):
@@ -547,8 +549,249 @@ class ParseTestIdentifierTest(unittest.TestCase):
         self.assertEqual([], identifier.module_names)
         self.assertEqual([], identifier.binary_names)
 
-if __name__ == '__main__':
-    unittest.main()
+
+class VerifyMainlineModuleTest(fake_filesystem_unittest.TestCase):
+    """test verify_mainline_modules sub-methods."""
+
+    def setUp(self):
+        """Setup func."""
+        self.setUpPyfakefs()
+
+    def test_verified_mainline_modules_no_brackets(self):
+        """True for it's not in mainline module pattern. (no brackets)"""
+        test_name = 'module0'
+        mod_info=create_module_info(
+            [module(name=test_name),]
+        )
+
+        test_identifier = cli_t.parse_test_identifier(test_name)
+        translator = cli_t.CLITranslator(mod_info)
+
+        self.assertTrue(
+            translator._verified_mainline_modules(test_identifier))
+
+    def test_verified_mainline_modules_not_valid_test_module(self):
+        """False for test_name is not a module."""
+        test_name = 'module1[foo.apk+goo.apk]'
+        mod_info=create_module_info(
+            [module(name='module_1'),
+             module(name='foo'),
+             module(name='goo'),]
+        )
+
+        test_identifier = cli_t.parse_test_identifier(test_name)
+        translator = cli_t.CLITranslator(mod_info)
+
+        self.assertFalse(
+            translator._verified_mainline_modules(test_identifier))
+
+    def test_verified_mainline_modules_not_valid_mainline_module(self):
+        """False for mainline_modules are not modules."""
+        test_name = 'module2[foo.apk+goo.apk]'
+        mod_info=create_module_info(
+            [module(name='module2')]
+        )
+
+        test_identifier = cli_t.parse_test_identifier(test_name)
+        translator = cli_t.CLITranslator(mod_info)
+
+        self.assertFalse(
+            translator._verified_mainline_modules(test_identifier))
+
+    def test_verified_mainline_modules_no_test_mainline_modules(self):
+        """False for no definition in `test_mainline_modules` attribute."""
+        test_name = "module3[foo.apk+goo.apex]"
+        mod_info = create_module_info(
+            [module(name='module3',
+                    test_mainline_modules=[]),
+             module(name='foo',
+                    installed=['out/path/foo.apk']),
+             module(name='goo',
+                     installed=['out/path/goo.apex'])]
+        )
+
+        test_identifier = cli_t.parse_test_identifier(test_name)
+        translator = cli_t.CLITranslator(mod_info)
+
+        self.assertFalse(
+            translator._verified_mainline_modules(test_identifier))
+
+    def test_verified_mainline_modules_test_mainline_modules(self):
+        """True for definition in `test_mainline_modules` attribute."""
+        test_name = "module4[foo.apk+goo.apex]"
+        mod_info = create_module_info(
+            [module(name='module4',
+                    test_mainline_modules=['foo.apk+goo.apex']),
+             module(name='foo',
+                    installed=['out/path/foo.apk']),
+             module(name='goo',
+                     installed=['out/path/goo.apex'])]
+        )
+
+        test_identifier = cli_t.parse_test_identifier(test_name)
+        translator = cli_t.CLITranslator(mod_info)
+
+        self.assertTrue(
+            translator._verified_mainline_modules(test_identifier))
+
+    def test_verified_mainline_modules_were_in_test_config(self):
+        """True for mainline modules were defined in the test_config."""
+        test_name = "module5[foo.apk+goo.apex]"
+        mainline_config = 'out/module3/AndroidTest.xml'
+        self.fs.create_file(
+            mainline_config,
+            contents="""
+            <configuration description="Mainline Module tests">
+                <option name="config"
+                        key="parameter" value="value_1" />
+                <option name="config-descriptor:metadata"
+                        key="mainline-param" value="foo.apk+goo.apex" />
+            </configuration>
+            """)
+        mod_info = create_module_info(
+            [module(name='module5',
+                    test_config=[mainline_config],
+                    test_mainline_modules=[],
+                    auto_test_config=[]),
+             module(name='foo',
+                    installed=['out/path/foo.apk']),
+             module(name='goo',
+                    installed=['out/path/goo.apex'])]
+        )
+
+        test_identifier = cli_t.parse_test_identifier(test_name)
+        translator = cli_t.CLITranslator(mod_info)
+
+        self.assertTrue(
+            translator._verified_mainline_modules(test_identifier))
+
+    def test_verified_mainline_modules_were_in_auto_config(self):
+        """True for 'auto_test_config'=[True]"""
+        test_name = "module6[foo.apk+goo.apex]"
+        mod_info = create_module_info(
+            [module(
+                 name='module6',
+                 test_config=['somewhere/AndroidTest.xml'],
+                 auto_test_config=[True]),
+             module(
+                 name='foo',
+                 installed=['out/path/foo.apk']),
+             module(
+                 name='goo',
+                 installed=['out/path/goo.apex'])]
+        )
+
+        test_identifier = cli_t.parse_test_identifier(test_name)
+        translator = cli_t.CLITranslator(mod_info)
+
+        self.assertTrue(
+            translator._verified_mainline_modules(test_identifier))
+
+    def test_verified_mainline_modules_have_no_association(self):
+        """False for null auto_test_config and null `mainline-param` in the test_config."""
+        test_name = "module7[foo.apk+goo.apex]"
+        config = 'out/module7/AndroidTest.xml'
+        self.fs.create_file(
+            config,
+            contents="""
+            <configuration description="Mainline Module tests">
+                <option name="config"
+                        key="parameter" value="value_1" />
+            </configuration>
+            """)
+        mod_info = create_module_info(
+            [module(
+                 name='module7',
+                 test_config=[config],
+                 auto_test_config=[]),
+             module(
+                 name='foo',
+                 installed=['out/path/foo.apk']),
+             module(
+                 name='goo',
+                 installed=['out/path/goo.apex'])]
+        )
+
+        test_identifier = cli_t.parse_test_identifier(test_name)
+        translator = cli_t.CLITranslator(mod_info)
+
+        self.assertFalse(
+            translator._verified_mainline_modules(test_identifier))
+
+    def test_verified_mainline_modules_were_in_auto_config(self):
+        """False for the given mainline is a capex file."""
+        test_name = "module8[foo.apk+goo.apex]"
+        mod_info = create_module_info(
+            [module(
+                 name='module8',
+                 test_mainline_modules=['foo.apk+goo.apex']),
+             module(
+                 name='foo',
+                 installed=['out/path/foo.apk']),
+             module(
+                 name='goo',
+                 installed=['out/path/goo.capex'])]
+        )
+
+        test_identifier = cli_t.parse_test_identifier(test_name)
+        translator = cli_t.CLITranslator(mod_info)
+
+        self.assertFalse(
+            translator._verified_mainline_modules(test_identifier))
+
+
+def create_module_info(modules=None):
+    """wrapper func for creating module_info.ModuleInfo"""
+    name_to_module_info = {}
+    modules = modules or []
+
+    for m in modules:
+        name_to_module_info[m['module_name']] = m
+
+    return module_info.load_from_dict(name_to_module_info)
+
+
+def module(
+    name=None,
+    path=None,
+    installed=None,
+    classes=None,
+    auto_test_config=None,
+    test_config=None,
+    shared_libs=None,
+    dependencies=None,
+    runtime_dependencies=None,
+    data=None,
+    data_dependencies=None,
+    compatibility_suites=None,
+    host_dependencies=None,
+    srcs=None,
+    supported_variants=None,
+    test_mainline_modules=None,
+):
+    """return a module info dict."""
+    name = name or 'libhello'
+
+    m = {}
+
+    m['module_name'] = name
+    m['class'] = classes or ['ETC']
+    m['path'] = [path or '']
+    m['installed'] = installed or []
+    m['is_unit_test'] = 'false'
+    m['auto_test_config'] = auto_test_config or []
+    m['test_config'] = test_config or []
+    m['shared_libs'] = shared_libs or []
+    m['runtime_dependencies'] = runtime_dependencies or []
+    m['dependencies'] = dependencies or []
+    m['data'] = data or []
+    m['data_dependencies'] = data_dependencies or []
+    m['compatibility_suites'] = compatibility_suites or []
+    m['host_dependencies'] = host_dependencies or []
+    m['srcs'] = srcs or []
+    m['supported_variants'] = supported_variants or []
+    m['test_mainline_modules'] = test_mainline_modules or []
+    return m
 
 
 def _gather_build_targets(test_infos):
@@ -556,3 +799,6 @@ def _gather_build_targets(test_infos):
     for t_info in test_infos:
         targets |= t_info.build_targets
     return targets
+
+if __name__ == '__main__':
+    unittest.main()

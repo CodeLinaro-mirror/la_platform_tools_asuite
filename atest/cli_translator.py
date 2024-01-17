@@ -49,6 +49,8 @@ FUZZY_FINDER = 'FUZZY'
 CACHE_FINDER = 'CACHE'
 TESTNAME_CHARS = {'#', ':', '/'}
 
+MAINLINE_LOCAL_DOC = 'go/mainline-local-build'
+
 # Pattern used to identify comments start with '//' or '#' in TEST_MAPPING.
 _COMMENTS_RE = re.compile(r'(?m)[\s\t]*(#|//).*|(\".*?\")')
 _COMMENTS = frozenset(['//', '#'])
@@ -105,7 +107,7 @@ class CLITranslator:
     # pylint: disable=too-many-locals
     # pylint: disable=too-many-branches
     # pylint: disable=too-many-statements
-    def _find_test_infos(self, test, tm_test_detail) -> Set[test_info.TestInfo]:
+    def _find_test_infos(self, test, tm_test_detail) -> List[test_info.TestInfo]:
         """Return set of TestInfos based on a given test.
 
         Args:
@@ -114,9 +116,9 @@ class CLITranslator:
                 files.
 
         Returns:
-            Set of TestInfos based on the given test.
+            List of TestInfos based on the given test.
         """
-        test_infos = set()
+        test_infos = []
         test_find_starts = time.time()
         test_found = False
         test_finders = []
@@ -181,7 +183,7 @@ class CLITranslator:
                         if self.mod_info.is_module(test_dep)]
                     for dep in test_deps_in_mod_info:
                         t_info.add_build_target(dep)
-                    test_infos.add(t_info)
+                    test_infos.append(t_info)
                 test_found = True
                 print("Found '%s' as %s" % (
                     atest_utils.mark_green(test),
@@ -197,7 +199,7 @@ class CLITranslator:
             if self.fuzzy_search:
                 f_results = self._fuzzy_search_and_msg(test, find_test_err_msg)
                 if f_results:
-                    test_infos.update(f_results)
+                    test_infos.extend(f_results)
                     test_found = True
                     test_finders.append(FUZZY_FINDER)
         metrics.FindTestFinishEvent(
@@ -235,28 +237,60 @@ class CLITranslator:
         if not mainline_binaries:
             return True
 
-        test = test_identifier.test_name
-        if not self.mod_info.is_module(test):
-            print('Error: "{}" is not a testable module.'.format(
-                atest_utils.mark_red(test)))
+        # Exit earlier when any test name or mainline modules are not valid.
+        if not self._valid_modules(test_identifier):
             return False
+
+        # Exit earlier if Atest cannot find relationship between the test and
+        # the mainline binaries.
+        return self._declared_mainline_modules(test_identifier)
+
+
+    def _valid_modules(self, identifier: TestIdentifier) -> bool:
+        """Determine the test_name and mainline modules are modules."""
+        if not self.mod_info.is_module(identifier.test_name):
+            print('Error: "{}" is not a testable module.'.format(
+                atest_utils.mark_red(identifier.test_name)))
+            return False
+
         # Exit earlier if the given mainline modules are unavailable in the
         # branch.
-        unknown_modules = [module for module in test_identifier.module_names
+        unknown_modules = [module for module in identifier.module_names
                            if not self.mod_info.is_module(module)]
         if unknown_modules:
             print('Error: Cannot find {} in module info!'.format(
                 atest_utils.mark_red(', '.join(unknown_modules))))
             return False
-        # Exit earlier if Atest cannot find relationship between the test and
-        # the mainline binaries.
-        mainline_binaries = test_identifier.binary_names
+
+        # Exit earlier if found unsupported `capex` files.
+        unsupported_binaries = []
+        for name in identifier.module_names:
+            info = self.mod_info.get_module_info(name)
+            if info.get('installed'):
+                for bin in info.get('installed'):
+                    if not re.search(atest_utils.MAINLINE_MODULES_EXT_RE, bin):
+                        unsupported_binaries.append(bin)
+        if unsupported_binaries:
+            print('The output format {} are not in a supported format; '
+                'did you run mainline local setup script? '
+                'Please refer to {}.'.format(
+                    atest_utils.mark_red(", ".join(unsupported_binaries)),
+                    atest_utils.mark_yellow(MAINLINE_LOCAL_DOC)))
+            return False
+
+        return True
+
+    def _declared_mainline_modules(self, identifier: TestIdentifier) -> bool:
+        """Determine if all mainline modules were associated to the test."""
+        test = identifier.test_name
+        mainline_binaries = identifier.binary_names
         if not self.mod_info.has_mainline_modules(test, mainline_binaries):
             print('Error: Mainline modules "{}" were not defined for {} in '
                   'neither build file nor test config.'.format(
                   atest_utils.mark_red(', '.join(mainline_binaries)),
                   atest_utils.mark_red(test)))
             return False
+
         return True
 
     def _fuzzy_search_and_msg(self, test, find_test_err_msg):
@@ -299,12 +333,12 @@ class CLITranslator:
         Returns:
             Set of TestInfos based on the passed in tests.
         """
-        test_infos = set()
+        test_infos = []
         if not test_mapping_test_details:
             test_mapping_test_details = [None] * len(tests)
         for test, tm_test_detail in zip(tests, test_mapping_test_details):
             found_test_infos = self._find_test_infos(test, tm_test_detail)
-            test_infos.update(found_test_infos)
+            test_infos.extend(found_test_infos)
         return test_infos
 
     def _confirm_running(self, results):
@@ -664,7 +698,7 @@ class CLITranslator:
                 {'name':test, 'host':True}) for test in host_unit_tests]
             host_unit_test_infos = self._get_test_infos(host_unit_tests,
                                                         host_unit_test_details)
-            test_infos.update(host_unit_test_infos)
+            test_infos.extend(host_unit_test_infos)
         if atest_utils.has_mixed_type_filters(test_infos):
             atest_utils.colorful_print(
                 'Mixed type filters found. '
@@ -684,12 +718,11 @@ class CLITranslator:
 # TODO: (b/265359291) Raise Exception when the brackets are not in pair.
 def parse_test_identifier(test: str) -> TestIdentifier:
     """Get mainline module names and binaries information."""
-    result = constants.TEST_WITH_MAINLINE_MODULES_RE.match(test)
+    result = atest_utils.get_test_and_mainline_modules(test)
     if not result:
         return TestIdentifier(test, [], [])
     test_name = result.group('test')
     mainline_binaries = result.group('mainline_modules').split('+')
-    mainline_modules = [re.sub(atest_utils.MAINLINE_MODULES_EXT_RE, '', m)
-                        for m in mainline_binaries]
+    mainline_modules = [Path(m).stem for m in mainline_binaries]
     logging.debug('mainline_modules: %s', mainline_modules)
     return TestIdentifier(test_name, mainline_modules, mainline_binaries)
