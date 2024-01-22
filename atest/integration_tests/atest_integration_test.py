@@ -23,27 +23,49 @@ restoration later.
 
 import argparse
 import atexit
-import inspect
+import copy
 import os
 from pathlib import Path
 import shutil
 import sys
 import tarfile
-from typing import Any, Dict, List, Sequence
+import tempfile
+from typing import Any, Dict, List
 import unittest
 
 from snapshot import Snapshot
 
-# Export the TestCase class to reduce the number of imports tests have to list.
-TestCase: unittest.TestCase = unittest.TestCase
+# Env key for the storage tar path.
+SNAPSHOT_STORAGE_TAR_KEY = 'SNAPSHOT_STORAGE_TAR_PATH'
 
-_DEVICE_SERIAL: str = None
-_IS_BUILD_ENV: bool = False
-_IS_TEST_ENV: bool = False
-_ARTIFACTS_DIR: Path = None
-_ARTIFACT_PACK_PATH: Path = None
-_DEFAULT_ARTIFACT_PATH_FILE_NAME = 'atest_integration_tests.tar'
-_SNAPSHOT_STORAGE_DIR_NAME = 'ATEST_INTEGRATION_TESTS_SNAPSHOT_STORAGE'
+# Relative path to the repo root for storing the snapshots and workspace
+_INTEGRATION_TEST_OUT_DIR_REL_PATH = 'out/atest_integration_tests'
+
+# Env key for the repo root
+_ANDROID_BUILD_TOP_KEY = 'ANDROID_BUILD_TOP'
+
+
+class AtestTestCase(unittest.TestCase):
+    """Base test case for build-test environment split integration tests."""
+
+    injected_config = None
+
+    def create_atest_integration_test(self):
+        """Create an instance of atest integration test utility."""
+        return AtestIntegrationTest(self.id(), self.injected_config)
+
+
+class _IntegrationTestConfiguration:
+    """Internal class to store integration test configuration."""
+
+    device_serial: str = None
+    is_build_env: bool = False
+    is_test_env: bool = False
+    is_device_serial_required = True
+    is_fast_mode = False
+    snapshot_storage_path: Path = None
+    snapshot_storage_tar_path: Path = None
+    workspace_path: Path = None
 
 
 class AtestIntegrationTest:
@@ -74,8 +96,10 @@ class AtestIntegrationTest:
         'out/host/linux-x86/obj',
     ]
 
+    _default_restore_exclude_paths = ['out/atest_bazel_workspace']
+
     _default_env_keys = [
-        'ANDROID_BUILD_TOP',
+        _ANDROID_BUILD_TOP_KEY,
         'ANDROID_HOST_OUT',
         'ANDROID_PRODUCT_OUT',
         'ANDROID_HOST_OUT_TESTCASES',
@@ -87,19 +111,22 @@ class AtestIntegrationTest:
         'JAVA_HOME',
     ]
 
-    def __init__(self, name: str) -> None:
+    def __init__(
+        self, name: str, config: _IntegrationTestConfiguration
+    ) -> None:
+        self._config = config
         self._include_paths: List[str] = self._default_include_paths
         self._exclude_paths: List[str] = self._default_exclude_paths
         self._env_keys: List[str] = self._default_env_keys
         self._id: str = name
         self._env: Dict[str, str] = None
-        self._snapshot: Snapshot = Snapshot(_get_snapshot_storage_path())
+        self._snapshot: Snapshot = Snapshot(self._config.snapshot_storage_path)
         self._add_jdk_to_include_path()
         self._snapshot_count = 0
 
     def _add_jdk_to_include_path(self) -> None:
         """Get the relative jdk directory in build environment."""
-        if is_in_test_env():
+        if self._config.is_test_env:
             return
         absolute_path = Path(os.environ['ANDROID_JAVA_HOME'])
         while not absolute_path.name.startswith('jdk'):
@@ -108,13 +135,22 @@ class AtestIntegrationTest:
             raise ValueError(
                 'Unrecognized jdk directory ' + os.environ['ANDROID_JAVA_HOME']
             )
-        repo_root = Path(os.environ['ANDROID_BUILD_TOP'])
+        repo_root = Path(os.environ[_ANDROID_BUILD_TOP_KEY])
         self._include_paths.append(
             absolute_path.relative_to(repo_root).as_posix()
         )
 
-    def add_snapshot_paths(self, *paths: str) -> None:
+    def add_snapshot_include_paths(self, *paths: str) -> None:
         """Add paths to include in snapshot artifacts."""
+        self._include_paths.extend(paths)
+
+    def set_snapshot_include_paths(self, *paths: str) -> None:
+        """Set the snapshot include paths.
+
+        Note that the default include paths will be removed.
+        Use add_snapshot_include_paths if that's not intended.
+        """
+        self._include_paths.clear()
         self._include_paths.extend(paths)
 
     def add_snapshot_exclude_paths(self, *paths: str) -> None:
@@ -138,234 +174,246 @@ class AtestIntegrationTest:
     def restore_snapshot(self, name: str) -> None:
         """Restore the repository and environment from a snapshot."""
         self._env = self._snapshot.restore_snapshot(
-            name, _get_workspace_dir().as_posix()
+            name,
+            self._config.workspace_path.as_posix(),
+            exclude_paths=self._default_restore_exclude_paths,
         )
 
     def in_build_env(self) -> bool:
         """Whether to executes test codes written for build environment only."""
-        return is_in_build_env()
+        return self._config.is_build_env
 
     def in_test_env(self) -> bool:
         """Whether to executes test codes written for test environment only."""
 
-        if is_in_build_env():
+        if self._config.is_build_env:
             self.take_snapshot(self._id + '_' + str(self._snapshot_count))
             self._snapshot_count += 1
-        if is_in_test_env():
+        if self._config.is_test_env:
             self.restore_snapshot(self._id + '_' + str(self._snapshot_count))
             self._snapshot_count += 1
-        return is_in_test_env()
+        return self._config.is_test_env
 
     def get_env(self) -> Dict[str, str]:
         """Get environment variables."""
-        if is_in_build_env():
+        if self._config.is_build_env:
             return os.environ.copy()
         return self._env
 
     def get_device_serial(self) -> str:
-        """Returns the serial of the connected device."""
-        if not _DEVICE_SERIAL:
-            raise RuntimeError('device serial is not set')
-        return _DEVICE_SERIAL
+        """Returns the serial of the connected device. Throws if not set."""
+        if not self._config.device_serial:
+            raise RuntimeError('Device serial is not set')
+        return self._config.device_serial
+
+    def get_device_serial_args_or_empty(self) -> str:
+        """Gets atest arguments for device serial. May return empty string."""
+        if self._config.device_serial:
+            return ' -s ' + self._config.device_serial
+        if self._config.is_device_serial_required:
+            raise RuntimeError('Device serial is required but not set')
+        return ''
 
     def get_repo_root(self) -> str:
         """Get repo root directory."""
-        if is_in_build_env():
-            return os.environ['ANDROID_BUILD_TOP']
-        return self._env['ANDROID_BUILD_TOP']
-
-    def _get_caller_name(self) -> str:
-        """Get name of calling function."""
-        current_stack_frame = inspect.stack()[2]
-        calling_class = current_stack_frame.frame.f_locals['self'].__class__
-        return (
-            calling_class.__name__
-            + '_'
-            + inspect.currentframe().f_back.f_back.f_code.co_name
-        )
+        if self._config.is_build_env:
+            return os.environ[_ANDROID_BUILD_TOP_KEY]
+        return self._env[_ANDROID_BUILD_TOP_KEY]
 
 
-def is_in_build_env() -> bool:
-    """Check if we are in the build environment."""
-    return _IS_BUILD_ENV
+def parse_known_args(argv: list[str]) -> tuple[argparse.Namespace, List[str]]:
+    """Parse command line args and check required args being provided."""
 
-
-def is_in_test_env() -> bool:
-    """Check if we are in the test environment."""
-    return _IS_TEST_ENV
-
-
-def _get_artifacts_path(*sub_paths: str) -> Path:
-    """Get the output directory."""
-    return Path(_ARTIFACTS_DIR, *sub_paths)
-
-
-def _get_snapshot_storage_path() -> Path:
-    return _get_artifacts_path(_SNAPSHOT_STORAGE_DIR_NAME)
-
-
-def _get_workspace_dir() -> Path:
-    """Get the directory for restoring the repo files."""
-    # TODO use temp dir after the prototype is verified in pipeline
-    return _get_artifacts_path('workspace')
-
-
-def _process_artifacts() -> None:
-    """Pack artifacts into a tarball and clean up."""
-    if is_in_build_env():
-        with tarfile.open(_ARTIFACT_PACK_PATH.as_posix(), 'w') as tar:
-            tar.add(
-                _get_snapshot_storage_path(),
-                arcname=_get_snapshot_storage_path().relative_to(
-                    _get_artifacts_path().as_posix()
-                ),
-            )
-    shutil.rmtree(_get_snapshot_storage_path())
-
-
-def _unpack_artifacts() -> None:
-    """Unpack artifacts from a tarball."""
-    with tarfile.open(_ARTIFACT_PACK_PATH.as_posix(), 'r') as tar:
-        tar.extractall(_get_artifacts_path().as_posix())
-
-
-def create_arg_parser(add_help: bool = False) -> argparse.ArgumentParser:
-    """Creates a new parser that can handle the default command-line flags.
-
-    The object returned by this function can be used by other modules that want
-    to
-    add their own command-line flags. The returned parser is intended to be
-    passed
-    to the 'parents' argument of ArgumentParser and extend the set of default
-    flags with additional ones.
-
-    Args:
-        add_help: whether to add an option which simply displays the parser’s
-          help message; this is typically false when used from other modules
-          that want to use the returned parser as a parent argument parser.
-
-    Returns:
-        A new arg parser that can handle the default flags expected by this
-        module.
-    """
-
-    parser = argparse.ArgumentParser(add_help=add_help)
+    parser = argparse.ArgumentParser(add_help=True)
 
     parser.add_argument(
         '-b',
         '--build',
         action='store_true',
         default=False,
-        help='Run in a build environment.',
+        help=(
+            'Run build steps. Can be set to true together with the test option.'
+            ' If both build and test are unset, will run both steps.'
+        ),
     )
     parser.add_argument(
         '-t',
         '--test',
         action='store_true',
         default=False,
-        help='Run in a test environment.',
+        help=(
+            'Run test steps. Can be set to true together with the build option.'
+            ' If both build and test are unset, will run both steps.'
+        ),
     )
     parser.add_argument(
-        '--artifacts_dir',
-        help='directory where test artifacts are saved',
-    )
-    parser.add_argument(
-        '--artifact_pack_path', help='path to the artifact pack file'
+        '--fast',
+        action='store_true',
+        default=False,
+        help=(
+            'Skip some steps to enable faster local development. Test result'
+            ' may be different from a full run and some clean up steps may be'
+            ' skipped.'
+        ),
     )
 
     # The below flags are passed in by the TF Python test runner.
-    parser.add_argument('-s', '--serial', help='the device serial')
+    parser.add_argument(
+        '-s',
+        '--serial',
+        help=(
+            'The device serial. Required in test mode when ANDROID_BUILD_TOP is'
+            ' not set.'
+        ),
+    )
     parser.add_argument(
         '--test-output-file',
-        help='the file in which to store the test results',
+        help=(
+            'The file in which to store the unit test results. This option is'
+            ' usually set by TradeFed when running the script with python and'
+            ' is optional during manual script execution.'
+        ),
     )
 
-    return parser
+    return parser.parse_known_args(argv)
 
 
-def run_tests(args: Any, unittest_argv: Sequence[str]) -> None:
-    """Executes atest integration test cases.
+def run_test(
+    config: _IntegrationTestConfiguration,
+    argv: list[str],
+    test_output_file_path: str = None,
+) -> None:
+    """Execute integration tests with given test configuration."""
 
-    This function unpacks the artifacts before running the tests if in a test
-    environment, and packs the artifacts after running the tests if in a build
-    environment.
+    if config.is_test_env and not config.snapshot_storage_tar_path.exists():
+        raise EnvironmentError(
+            f'Snapshot tar {config.snapshot_storage_tar_path} does not exist.'
+        )
 
-    Args:
-      args: an object that contains at least the set of attributes defined in
-        objects returned when using the default argument parser.
-      unittest_argv: the list of command-line arguments to forward to
-        unittest.main.
-    """
-    Path(_ARTIFACTS_DIR).mkdir(parents=True, exist_ok=True)
+    def cleanup() -> None:
+        if config.workspace_path.exists():
+            shutil.rmtree(config.workspace_path)
+        if config.snapshot_storage_path.exists():
+            shutil.rmtree(config.snapshot_storage_path)
 
-    if is_in_test_env():
-        _unpack_artifacts()
+    if config.is_test_env and not config.is_fast_mode:
+        with tarfile.open(config.snapshot_storage_tar_path, 'r') as tar:
+            tar.extractall(config.snapshot_storage_path.parent.as_posix())
+        atexit.register(cleanup)
 
-    def execute_after_tests() -> None:
-        # Code to execute after unittest.main()
-        if _get_workspace_dir().exists():
-            shutil.rmtree(_get_workspace_dir())
-        _process_artifacts()
+    def unittest_main(stream=None):
+        # Note that we use a type and not an instance for 'testRunner'
+        # since TestProgram forwards its constructor arguments when creating
+        # an instance of the runner type. Not doing so would require us to
+        # make sure that the parameters passed to TestProgram are aligned
+        # with those for creating a runner instance.
+        class TestRunner(unittest.TextTestRunner):
+            """Writes test results to the TF-provided file."""
 
-    atexit.register(execute_after_tests)
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(stream=stream, *args, **kwargs)
 
-    if args.test_output_file:
-        Path(args.test_output_file).parent.mkdir(exist_ok=True)
+        class TestLoader(unittest.TestLoader):
+            """Injects the test configuration to the test classes."""
+
+            def __init__(self, config: _IntegrationTestConfiguration):
+                super().__init__()
+                self._config = config
+
+            def loadTestsFromTestCase(self, *args, **kwargs):
+                tests = super().loadTestsFromTestCase(*args, **kwargs)
+                # pylint: disable=protected-access
+                for test in tests._tests:
+                    test.injected_config = self._config
+                return tests
+
+        # Setting verbosity is required to generate output that the TradeFed
+        # test runner can parse.
+        unittest.main(
+            testRunner=TestRunner,
+            verbosity=3,
+            argv=argv,
+            testLoader=TestLoader(config),
+            exit=config.is_test_env,
+        )
+
+    if test_output_file_path:
+        Path(test_output_file_path).parent.mkdir(exist_ok=True)
 
         with open(
-            args.test_output_file, 'w', encoding='utf-8'
+            test_output_file_path, 'w', encoding='utf-8'
         ) as test_output_file:
-            # Note that we use a type and not an instance for 'testRunner'
-            # since TestProgram forwards its constructor arguments when creating
-            # an instance of the runner type. Not doing so would require us to
-            # make sure that the parameters passed to TestProgram are aligned
-            # with those for creating a runner instance.
-            class TestRunner(unittest.TextTestRunner):
-                """Runner that writes test results to the TF-provided file."""
-
-                def __init__(self, *args: Any, **kwargs: Any) -> None:
-                    super().__init__(stream=test_output_file, *args, **kwargs)
-
-            # Setting verbosity is required to generate output that the TradeFed
-            # test runner can parse.
-            unittest.TestProgram(
-                verbosity=3, testRunner=TestRunner, argv=unittest_argv
-            )
+            unittest_main(stream=test_output_file)
     else:
-        unittest.main(argv=unittest_argv, verbosity=2)
+        unittest_main(stream=None)
+
+    if config.is_build_env and not config.is_fast_mode:
+        with tarfile.open(config.snapshot_storage_tar_path, 'w') as tar:
+            tar.add(
+                config.snapshot_storage_path,
+                arcname=config.snapshot_storage_path.name,
+            )
+        cleanup()
 
 
 def main() -> None:
-    """Executes a set of Python unit tests."""
-    # pylint: disable=global-statement
-    global _DEVICE_SERIAL, _ARTIFACTS_DIR, _IS_BUILD_ENV, _IS_TEST_ENV
-    global _ARTIFACT_PACK_PATH
-    parser = create_arg_parser(add_help=True)
-    args, unittest_argv = parser.parse_known_args(sys.argv)
+    """Main method to start the integration tests."""
+
+    args, unittest_argv = parse_known_args(sys.argv)
 
     print(f'The os environ is: {os.environ}')
 
-    if args.build and args.test:
-        parser.error('running build and test env together is not supported yet')
-    if not args.build and not args.test:
-        parser.error('must specify to run either in build or test env')
-    if args.build and not args.artifacts_dir:
-        parser.error('running in build env requires artifacts_dir be set')
-    if args.test and not args.artifact_pack_path:
-        parser.error('running in test env requires artifact_pack_path be set')
+    snapshot_storage_dir_name = 'snapshot_storage'
+    snapshot_storage_tar_name = 'snapshot.tar'
 
-    _IS_BUILD_ENV = args.build
-    _IS_TEST_ENV = args.test
-    _DEVICE_SERIAL = args.serial
-    _ARTIFACTS_DIR = (
-        Path(args.artifacts_dir)
-        if args.artifacts_dir
-        else Path(args.artifact_pack_path).parent
-    )
-    _ARTIFACT_PACK_PATH = (
-        Path(args.artifact_pack_path)
-        if args.artifact_pack_path
-        else _ARTIFACTS_DIR.joinpath(_DEFAULT_ARTIFACT_PATH_FILE_NAME)
-    )
+    if _ANDROID_BUILD_TOP_KEY in os.environ:
+        integration_test_out_path = Path(
+            os.environ[_ANDROID_BUILD_TOP_KEY]
+        ).joinpath(_INTEGRATION_TEST_OUT_DIR_REL_PATH)
+        integration_test_out_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        # pylint: disable=consider-using-with
+        integration_test_out_path = Path(tempfile.TemporaryDirectory().name)
 
-    run_tests(args, unittest_argv)
+    if SNAPSHOT_STORAGE_TAR_KEY in os.environ:
+        snapshot_storage_tar_path = Path(os.environ[SNAPSHOT_STORAGE_TAR_KEY])
+        snapshot_storage_tar_path.parent.mkdir(parents=True, exist_ok=True)
+    elif _ANDROID_BUILD_TOP_KEY in os.environ:
+        snapshot_storage_tar_path = integration_test_out_path.joinpath(
+            snapshot_storage_tar_name
+        )
+    else:
+        raise EnvironmentError(
+            'Cannot determine snapshot storage tar path. Try set the'
+            f' {SNAPSHOT_STORAGE_TAR_KEY} environment value.'
+        )
+
+    # When the build or test is unset, assume it's a local run for both build
+    # and test steps.
+    is_build_test_unset = not args.build and not args.test
+    config = _IntegrationTestConfiguration()
+    config.is_build_env = args.build or is_build_test_unset
+    config.is_test_env = args.test or is_build_test_unset
+    config.device_serial = args.serial
+    config.snapshot_storage_path = integration_test_out_path.joinpath(
+        snapshot_storage_dir_name
+    )
+    config.snapshot_storage_tar_path = snapshot_storage_tar_path
+    config.workspace_path = integration_test_out_path.joinpath('workspace')
+    # Device serial is not required during local run, and
+    # _ANDROID_BUILD_TOP_KEY env being available implies it's local run.
+    config.is_device_serial_required = not _ANDROID_BUILD_TOP_KEY in os.environ
+    config.is_fast_mode = args.fast
+
+    if config.is_build_env ^ config.is_test_env:
+        run_test(config, unittest_argv, args.test_output_file)
+        return
+
+    build_config = copy.deepcopy(config)
+    build_config.is_test_env = False
+
+    test_config = copy.deepcopy(config)
+    test_config.is_build_env = False
+
+    run_test(build_config, unittest_argv, args.test_output_file)
+    run_test(test_config, unittest_argv, args.test_output_file)
