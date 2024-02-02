@@ -150,7 +150,7 @@ def _get_transitive_module_deps(info,
 
 
 def _find_native_binaries(module_dir):
-    files = module_dir.glob('*cov*/unstripped/*')
+    files = module_dir.glob('*cov*/**/unstripped/*')
 
     # Exclude .rsp files. These are files containing the command line used to
     # generate the unstripped binaries, but are stored in the same directory as
@@ -252,7 +252,7 @@ def _generate_native_coverage_report(unstripped_native_binaries, results_dir):
 
 
 def _generate_lcov_report(out_dir, reports, root_dir=None):
-    cmd = ['genhtml', '-q', '-o', out_dir]
+    cmd = ['genhtml', '-q', '-o', out_dir, '--ignore-errors', 'unmapped']
     if root_dir:
         cmd.extend(['-p', root_dir])
     cmd.extend(reports)
