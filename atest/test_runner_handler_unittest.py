@@ -19,17 +19,13 @@
 # pylint: disable=protected-access
 # pylint: disable=line-too-long
 
-import os
 import unittest
 
 from unittest import mock
 
 from atest import atest_error
-from atest import module_info
 from atest import test_runner_handler
-from atest import unittest_constants as uc
 
-from atest.metrics import metrics
 from atest.test_finders import test_info
 from atest.test_runners import test_runner_base as tr_base
 

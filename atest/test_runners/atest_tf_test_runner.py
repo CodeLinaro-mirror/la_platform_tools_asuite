@@ -172,6 +172,17 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
             detect_type=DetectType.IS_MINIMAL_BUILD,
             result=int(self._minimal_build))
 
+    def requires_device_update(
+        self, test_infos: List[test_info.TestInfo]) -> bool:
+        """Checks whether this runner requires device update."""
+
+        requires_device = False
+        for info in test_infos:
+            test = self._create_test(info)
+            requires_device |= test.requires_device()
+
+        return requires_device
+
     def _try_set_gts_authentication_key(self):
         """Set GTS authentication key if it is available or exists.
 
@@ -362,7 +373,11 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
                                 "user type, please check test config.",
                                 constants.RED)
                         atest_utils.colorful_print(
-                            r'No test to run. Test Logs have saved in '
+                            r'No test results available. TradeFed did not find'
+                            r' any test cases to run. This is possibly due to'
+                            r' the no tests matching the current test filters'
+                            r' or misconfigured AndroidTest.xml. Test Logs'
+                            r' are saved in '
                             f'{reporter.log_path}.',
                             constants.RED, constants.WHITE)
                     if not data_map:
@@ -606,24 +621,17 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
             raise Error(
                 f'Could not find module information for {t_info.raw_test_name}')
 
-        if self.module_info.is_device_driven_test(info) and (
-            not self._is_host_enabled or not self.module_info.is_host_driven_test(info)):
-            return DeviceTest(info, Variant.DEVICE, t_info.mainline_modules)
+        def _select_variant(info):
+            variants = self.module_info.build_variants(info)
+            if len(variants) < 2:
+                return Variant.HOST if variants[0] == 'HOST' else Variant.DEVICE
+            return Variant.HOST if self._is_host_enabled else Variant.DEVICE
 
-        if self.module_info.is_modern_robolectric_test(info):
-            return DevicelessTest(info, Variant.DEVICE)
+        if not self._is_host_enabled and self.module_info.requires_device(info):
+            return DeviceTest(
+                info, _select_variant(info), t_info.mainline_modules)
 
-        if self.module_info.is_ravenwood_test(info):
-            return DevicelessTest(info, Variant.DEVICE)
-
-        if self.module_info.is_host_unit_test(info):
-            return DevicelessTest(info, Variant.HOST)
-
-        if self.module_info.is_host_driven_test(info):
-            return DeviceTest(info, Variant.HOST, t_info.mainline_modules)
-
-        raise Error(
-            f'--minimal-build is unsupported for {t_info.raw_test_name}')
+        return DevicelessTest(info, _select_variant(info))
 
     def _get_host_framework_targets(self) -> Set[str]:
         """Get the build targets for all the existing jars under host framework.
@@ -1387,6 +1395,10 @@ class Test(ABC):
     def _get_harness_build_targets(self) -> Set[Target]:
         """Returns the list of build targets of test harness and its dependencies."""
 
+    @abstractmethod
+    def requires_device(self) -> bool:
+        """Returns true if the test requires a device, otherwise false."""
+
 
 class DeviceTest(Test):
     """A device test that can be run."""
@@ -1402,6 +1414,9 @@ class DeviceTest(Test):
 
     def query_runtime_targets(self) -> Set[Target]:
         return self.query_build_targets() | _get_host_required_deps(self._info)
+
+    def requires_device(self):
+        return True
 
     def _get_test_build_targets(self) -> Set[Target]:
         module_name = self._info[constants.MODULE_INFO_ID]
@@ -1459,6 +1474,9 @@ class DevicelessTest(Test):
 
     def query_runtime_targets(self) -> Set[Target]:
         return self.query_build_targets()
+
+    def requires_device(self):
+        return False
 
 
 def _get_libs_deps(info: Dict[str, Any], variant: Variant) -> Set[Target]:

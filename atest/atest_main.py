@@ -66,6 +66,7 @@ from atest.metrics import metrics_utils
 from atest.test_finders import test_finder_utils
 from atest.test_finders import test_info
 from atest.test_finders.test_info import TestInfo
+from atest.test_runner_invocation import TestRunnerInvocation
 from atest.tools import indexing
 from atest.tools import start_avd as avd
 
@@ -96,6 +97,7 @@ EXIT_CODES_BEFORE_TEST = [ExitCode.ENV_NOT_SETUP,
 class Steps:
     """A Dataclass that stores steps and shows step assignments."""
     _build: bool
+    _device_update: bool
     _install: bool
     _test: bool
 
@@ -105,7 +107,11 @@ class Steps:
 
     def is_build_only(self):
         """Return whether build is the only one in steps."""
-        return self._build and not any((self._test, self._install))
+        return self._build and not any((self._test, self._install, self._device_update))
+
+    def has_device_update(self):
+        """Return whether device update is in steps."""
+        return self._device_update
 
     def has_install(self):
         """Return whether install is in steps."""
@@ -117,7 +123,7 @@ class Steps:
 
     def is_test_only(self):
         """Return whether build is not in steps but test."""
-        return self._test and not any((self._build, self._install))
+        return self._test and not any((self._build, self._install, self._device_update))
 
 
 def parse_steps(args: atest_arg_parser.AtestArgParser) -> Steps:
@@ -131,7 +137,7 @@ def parse_steps(args: atest_arg_parser.AtestArgParser) -> Steps:
     """
     # Implicitly running 'build', 'install' and 'test' when args.steps is None.
     if not args.steps:
-        return Steps(True, True, True)
+        return Steps(True, args.update_device, True, True)
     build =  constants.BUILD_STEP in args.steps
     test = constants.TEST_STEP in args.steps
     install = constants.INSTALL_STEP in args.steps
@@ -139,7 +145,7 @@ def parse_steps(args: atest_arg_parser.AtestArgParser) -> Steps:
         logging.warning('Installing without test step is currently not '
                         'supported; Atest will proceed testing!')
         test = True
-    return Steps(build, install, test)
+    return Steps(build, args.update_device, install, test)
 
 
 def _get_args_from_config():
@@ -509,7 +515,29 @@ def _print_module_info_from_module_name(mod_info, module_name):
         is_module_found = True
     return is_module_found
 
+def _print_deprecation_warning(arg_to_deprecate: str):
+    """
+    For features that are up for deprecation in the near future, print a message
+    to alert the user about the upcoming deprecation.
 
+    Args:
+        arg_to_deprecate: the arg with which the to-be-deprecated feature is
+        called.
+    """
+    args_to_deprecation_info = {
+        # arg_to_deprecate : (deprecation timeframe, additional info for users)
+        "--info": (
+            "is deprecated.",
+            "\nUse CodeSearch or `gomod` instead.")
+    }
+
+    warning_message = (f"\nWARNING: The `{arg_to_deprecate}` feature "
+    +' '.join(args_to_deprecation_info[arg_to_deprecate])
+    +"\nPlease file a bug or feature request to the Atest team if you have any "
+    "concerns.")
+    atest_utils.colorful_print(warning_message, constants.RED)
+
+#TODO(b/318574179): delete this code after the buffer period is up.
 def _print_test_info(mod_info, test_infos):
     """Print the module information from TestInfos.
 
@@ -564,8 +592,7 @@ def _split_test_mapping_tests(test_infos):
 
 # pylint: disable=too-many-locals
 def _run_test_mapping_tests(
-    test_type_to_invocations: Dict[
-        str, List[test_runner_handler.TestRunnerInvocation]],
+    test_type_to_invocations: Dict[str, List[TestRunnerInvocation]],
     extra_args: Dict[str, Any]) -> ExitCode:
     """Run all tests in TEST_MAPPING files.
 
@@ -1010,7 +1037,7 @@ def main(
     extra_args = test_execution_plan.extra_args
 
     if args.info:
-        return _print_test_info(mod_info, test_infos)
+        return _print_deprecation_warning("--info")
 
     build_targets = test_execution_plan.required_build_targets()
 
@@ -1030,6 +1057,8 @@ def main(
             return 0
 
     steps = parse_steps(args)
+    device_update_method = _configure_update_method(steps, test_execution_plan)
+
     if build_targets and steps.has_build():
         if args.experimental_coverage:
             build_targets.add('jacoco_to_lcov_converter')
@@ -1037,6 +1066,8 @@ def main(
         # Add module-info.json target to the list of build targets to keep the
         # file up to date.
         build_targets.add(module_info.get_module_info_target())
+
+        build_targets |= device_update_method.dependencies()
 
         # Add the -jx as a build target if user specify it.
         if args.build_j:
@@ -1075,6 +1106,8 @@ def main(
         # Tradefed if the tests require a device.
         _validate_adb_devices(args, test_infos)
 
+    device_update_method.update(extra_args.get(constants.SERIAL, []))
+
     tests_exit_code = ExitCode.SUCCESS
     test_start = time.time()
     if steps.has_test():
@@ -1107,6 +1140,22 @@ def main(
     return tests_exit_code
 
 
+def _configure_update_method(
+    steps: Steps, plan: TestExecutionPlan) -> device_update.DeviceUpdateMethod:
+
+    if not steps.has_device_update():
+        return device_update.NoopUpdateMethod()
+
+    if not plan.requires_device_update():
+        atest_utils.colorful_print(
+            '\nWarning: Device update ignored because it is not required by '
+            'tests in this invocation.',
+            constants.YELLOW)
+        return device_update.NoopUpdateMethod()
+
+    return device_update.AdeviceUpdateMethod()
+
+
 def _create_test_execution_plan(
     *,
     test_infos: List[test_info.TestInfo],
@@ -1126,9 +1175,6 @@ def _create_test_execution_plan(
     Returns:
         An instance of TestExecutionPlan.
     """
-    device_update_method = (
-        device_update.AdeviceUpdateMethod() if args.update_device
-        else device_update.NoopUpdateMethod())
 
     if is_from_test_mapping(test_infos):
         return TestMappingExecutionPlan.create(
@@ -1142,8 +1188,7 @@ def _create_test_execution_plan(
         results_dir = results_dir,
         mod_info = mod_info,
         args = args,
-        dry_run = dry_run,
-        device_update_method = device_update_method)
+        dry_run = dry_run)
 
 
 class TestExecutionPlan(ABC):
@@ -1168,6 +1213,10 @@ class TestExecutionPlan(ABC):
     def required_build_targets(self) -> Set[str]:
         """Returns the list of build targets required by this plan."""
 
+    @abstractmethod
+    def requires_device_update(self) -> bool:
+        """Checks whether this plan requires device update."""
+
 
 class TestMappingExecutionPlan(TestExecutionPlan):
     """A plan to execute Test Mapping tests."""
@@ -1175,8 +1224,7 @@ class TestMappingExecutionPlan(TestExecutionPlan):
     def __init__(
         self,
         *,
-        test_type_to_invocations: Dict[
-            str, List[test_runner_handler.TestRunnerInvocation]],
+        test_type_to_invocations: Dict[str, List[TestRunnerInvocation]],
         extra_args: Dict[str, Any],
     ):
         super().__init__(extra_args=extra_args)
@@ -1251,7 +1299,12 @@ class TestMappingExecutionPlan(TestExecutionPlan):
 
         return TestMappingExecutionPlan(
             test_type_to_invocations = test_type_to_invocations,
-            extra_args = extra_args)
+            extra_args = extra_args,
+        )
+
+    def requires_device_update(self) -> bool:
+        return _requires_device_update(
+            [i for invs in self._test_type_to_invocations.values() for i in invs])
 
     def required_build_targets(self) -> Set[str]:
         build_targets = set()
@@ -1272,13 +1325,11 @@ class TestModuleExecutionPlan(TestExecutionPlan):
     def __init__(
         self,
         *,
-        test_runner_invocations: List[test_runner_handler.TestRunnerInvocation],
+        test_runner_invocations: List[TestRunnerInvocation],
         extra_args: Dict[str, Any],
-        device_update_method: device_update.DeviceUpdateMethod,
     ):
         super().__init__(extra_args=extra_args)
         self._test_runner_invocations = test_runner_invocations
-        self._device_update_method = device_update_method
 
     @staticmethod
     def create(
@@ -1288,7 +1339,6 @@ class TestModuleExecutionPlan(TestExecutionPlan):
         mod_info: module_info.ModuleInfo,
         args: argparse.Namespace,
         dry_run: bool,
-        device_update_method: device_update.DeviceUpdateMethod,
     ) -> TestModuleExecutionPlan:
         """Creates an instance of TestModuleExecutionPlan.
 
@@ -1298,7 +1348,6 @@ class TestModuleExecutionPlan(TestExecutionPlan):
             mod_info: An instance of ModuleInfo.
             args: An argparse.Namespace instance holding parsed args.
             dry_run: A boolean of whether this invocation is a dry run.
-            device_update_method: An instance of DeviceUpdateMethod.
 
         Returns:
             An instance of TestModuleExecutionPlan.
@@ -1321,20 +1370,19 @@ class TestModuleExecutionPlan(TestExecutionPlan):
         return TestModuleExecutionPlan(
             test_runner_invocations = invocations,
             extra_args = extra_args,
-            device_update_method = device_update_method)
+        )
+
+    def requires_device_update(self) -> bool:
+        return _requires_device_update(self._test_runner_invocations)
 
     def required_build_targets(self) -> Set[str]:
         build_targets = set()
         for test_runner_invocation in self._test_runner_invocations:
             build_targets |= test_runner_invocation.get_test_runner_reqs()
 
-        build_targets |= self._device_update_method.dependencies()
-
         return build_targets
 
     def execute(self) -> ExitCode:
-
-        self._device_update_method.update()
 
         reporter = result_reporter.ResultReporter(
             collect_only = self.extra_args.get(constants.COLLECT_TESTS_ONLY))
@@ -1345,6 +1393,11 @@ class TestModuleExecutionPlan(TestExecutionPlan):
             exit_code |= invocation.run_all_tests(reporter)
 
         return reporter.print_summary() | exit_code
+
+
+def _requires_device_update(invocations: List[TestRunnerInvocation]) -> bool:
+    """Checks if any invocation requires device update."""
+    return any(i.requires_device_update() for i in invocations)
 
 
 if __name__ == '__main__':
