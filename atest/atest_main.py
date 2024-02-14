@@ -41,7 +41,6 @@ import tempfile
 import time
 from typing import Any, Dict, List, Set, Tuple
 
-from atest import atest_arg_parser
 from atest import atest_configs
 from atest import atest_error
 from atest import atest_execution_info
@@ -54,6 +53,7 @@ from atest import device_update
 from atest import module_info
 from atest import result_reporter
 from atest import test_runner_handler
+from atest.arg_parser import atest_arg_parser
 from atest.atest_enum import DetectType, ExitCode
 from atest.coverage import coverage
 from atest.metrics import metrics
@@ -228,9 +228,7 @@ def _parse_args(argv: List[Any]) -> Tuple[argparse.ArgumentParser, List[str]]:
   if CUSTOM_ARG_FLAG in argv:
     custom_args_index = argv.index(CUSTOM_ARG_FLAG)
     pruned_argv = argv[:custom_args_index]
-  parser = atest_arg_parser.AtestArgParser()
-  parser.add_atest_args()
-  args = parser.parse_args(pruned_argv)
+  args = atest_arg_parser.parse_args(pruned_argv)
   args.custom_args = []
   if custom_args_index is not None:
     for arg in argv[custom_args_index + 1 :]:
@@ -1104,7 +1102,7 @@ def main(argv: List[Any], results_dir: str, args: argparse.Namespace):
 
   if build_targets and steps.has_build():
     if args.experimental_coverage:
-      build_targets.add('jacoco_to_lcov_converter')
+      build_targets.update(coverage.build_modules())
 
     # Add module-info.json target to the list of build targets to keep the
     # file up to date.
