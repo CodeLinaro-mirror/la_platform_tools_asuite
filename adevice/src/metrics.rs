@@ -12,7 +12,7 @@ use adevice_proto::user_log::Duration;
 use anyhow::{anyhow, Result};
 use std::env;
 use std::fs;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::UNIX_EPOCH;
 use tracing::debug;
 
@@ -108,7 +108,7 @@ impl MetricSender for Metrics {
         self.add_action_event("host_fingerprint", profiler.host_fingerprint);
         self.add_action_event("ninja_deps_computer", profiler.ninja_deps_computer);
         self.add_action_event("adb_cmds", profiler.adb_cmds);
-        self.add_action_event("reboot", profiler.reboot);
+        self.add_action_event(&profiler.restart_type, profiler.restart);
         self.add_action_event("wait_for_device", profiler.wait_for_device);
         self.add_action_event("wait_for_boot_completed", profiler.wait_for_boot_completed);
         self.add_action_event("first_remount_rw", profiler.first_remount_rw);
@@ -123,7 +123,7 @@ impl MetricSender for Metrics {
                 - profiler.host_fingerprint
                 - profiler.ninja_deps_computer
                 - profiler.adb_cmds
-                - profiler.reboot
+                - profiler.restart
                 - profiler.wait_for_device
                 - profiler.wait_for_boot_completed
                 - profiler.first_remount_rw,
@@ -168,13 +168,13 @@ impl Metrics {
         let temp_file_path = format!("{}/adevice/adevice.bin", out);
         fs::create_dir_all(temp_dir).expect("Failed to create folder for metrics");
         fs::write(temp_file_path.clone(), body).expect("Failed to write to metrics file");
-        let output = Command::new(METRICS_UPLOADER)
-            .arg(&temp_file_path)
-            .output()
+        Command::new(METRICS_UPLOADER)
+            .args([&temp_file_path])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
             .expect("Failed to send metrics");
-        fs::remove_file(temp_file_path)?;
-        let output_text = String::from_utf8(output.stdout).unwrap();
-        debug!("Metrics uploader: {}", output_text);
 
         // TODO implement next_request_wait_millis that comes back in response
 

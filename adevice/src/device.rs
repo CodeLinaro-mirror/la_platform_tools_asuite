@@ -69,7 +69,7 @@ impl Device for RealDevice {
         time!(
             {
                 let args = self.adjust_adb_args(&["wait-for-device".to_string()]);
-                self.wait_for_adb_with_timeout(&args, Duration::from_secs(50))?;
+                self.wait_for_adb_with_timeout(&args, Duration::from_secs(70))?;
             },
             profiler.wait_for_device
         );
@@ -117,7 +117,7 @@ impl Device for RealDevice {
 
         // Adb remount returns status 0, but writes the mounts to stderr.
         // Just swallow the useless output and return ok.
-        if let Some(cmd) = cmd.get(0) {
+        if let Some(cmd) = cmd.first() {
             if output.status.success() && cmd == "remount" {
                 return Ok("".to_string());
             }
@@ -245,7 +245,7 @@ impl RealDevice {
     /// in the `timeout` amount of time.
     pub fn wait_for_adb_with_timeout(&self, args: &[String], timeout: Duration) -> Result<String> {
         let output = run_process_with_timeout(timeout, "adb", args);
-
+        progress::stop();
         match output {
             Ok(finished) if finished.status.success() => Ok("".to_string()),
             Ok(finished) if matches!(finished.status.code(), Some(124)) => {
@@ -316,9 +316,11 @@ pub fn update(
     progress::stop();
     println!();
 
-    match restart_type(restart_chooser, &installed_files) {
-        RestartType::Reboot => time!(device.reboot(), profiler.reboot),
-        RestartType::SoftRestart => time!(device.soft_restart(), profiler.reboot),
+    let rtype = restart_type(restart_chooser, &installed_files);
+    profiler.restart_type = format!("{:?}", rtype);
+    match rtype {
+        RestartType::Reboot => time!(device.reboot(), profiler.restart),
+        RestartType::SoftRestart => time!(device.soft_restart(), profiler.restart),
         RestartType::None => {
             tracing::debug!("No restart command");
             return Ok(());
