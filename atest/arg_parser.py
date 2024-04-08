@@ -87,7 +87,19 @@ def create_atest_arg_parser():
       action='store_true',
       help=(
           'Build and deploy your changes to the device. By default, ATest'
-          ' will build `sync` and use `adevice` to update the device.'
+          ' will build `sync` and use `adevice` to update the device. '
+          'Note, this feature currently only works for incremental device '
+          'updates and not after a repo sync. Please flash the device after a '
+          'repo sync.'
+      ),
+  )
+  parser.add_argument(
+      '--update:modules',
+      dest='update_modules',
+      type=lambda value: value.split(','),
+      help=(
+          'Modules that are built if the device is being updated. '
+          'Modules should be separated by comma.'
       ),
   )
 
@@ -410,7 +422,15 @@ def create_atest_arg_parser():
   parser.add_argument(
       '--test-filter',
       nargs='?',
-      help='Run tests which are specified using this option.',
+      # TODO(b/326457393): JarHostTest to support running parameterized tests
+      # with base method
+      # TODO(b/326141263): TradeFed to support wildcard in include-filter for
+      # parametrized JarHostTests
+      help=(
+          'Run only the tests which are specified with this option. '
+          'Filtering by method and with wildcard is not yet supported for '
+          'all test types.'
+      ),
   )
   parser.add_argument(
       '--test-timeout',
@@ -501,6 +521,16 @@ def create_atest_arg_parser():
       nargs='?',
       type=int,
       help='Number of build run processes.',
+  )
+  # Flag to use atest_local_min.xml as the TF base templates, this is added
+  # to roll out the change that uses separate templates for device/deviceless
+  # tests and should be removed once that feature is stable.
+  parser.add_argument(
+      '--use-tf-min-base-template',
+      dest='use_tf_min_base_template',
+      action=argparse.BooleanOptionalAction,
+      default=False,
+      help='Run tests using atest_local_min.xml as the TF base templates.',
   )
 
   # This arg actually doesn't consume anything, it's primarily used for
@@ -677,6 +707,20 @@ EXAMPLES
 
       atest FrameworksServicesTests:ScreenDecorWindowTests#testFlagChange,testRemoval
 
+
+    - - - - - - - - - - - - -
+    FILTERING TESTS
+    - - - - - - - - - - - - -
+    It is possible to run only the tests that are specified by a custom filter, although not all test types support filtering by wildcard.
+
+    Usage format:
+      atest <TestModuleName> --test-filter <test.package.name>.<TestClass>#<testMethod>
+
+    Example:
+      atest  ParameterizedHelloWorldTests --test-filter '.*HelloWorldTest#testHa.*'
+
+    Note: parametrized JarHostTests can only be filtered by a specific method if parameters are also provided TODO(b/326457393). Wildcard filtering is not supported TODO(b/326141263):
+      atest <TestModuleName> --test-filter <test.package.name>.<ParameterizedTestClass>#<testMethod>[<param1>=<value>,<param2>=<value>]
 
     - - - - - - - - - - - - -
     RUNNING MULTIPLE CLASSES
