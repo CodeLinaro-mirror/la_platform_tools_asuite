@@ -42,7 +42,6 @@ from atest import module_info
 from atest import result_reporter
 from atest.atest_enum import DetectType, ExitCode
 from atest.coverage import coverage
-from atest.logstorage import atest_gcp_utils
 from atest.logstorage import logstorage_utils
 from atest.metrics import metrics
 from atest.test_finders import test_finder_utils
@@ -311,7 +310,11 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
     self._try_set_gts_authentication_key()
     result = 0
     upload_start = time.time()
-    creds, inv = atest_gcp_utils.do_upload_flow(extra_args)
+    creds, inv = (
+        logstorage_utils.do_upload_flow(extra_args)
+        if logstorage_utils.is_upload_enabled(extra_args)
+        else (None, None)
+    )
     metrics.LocalDetectEvent(
         detect_type=DetectType.UPLOAD_FLOW_MS,
         result=int((time.time() - upload_start) * 1000),
@@ -1164,7 +1167,9 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
           and 'metric_post_processor' not in tf_template_keys
       ):
         template_key = 'metric_post_processor'
-        template_value = 'google/template/postprocessors/metric-file-aggregate-disabled'
+        template_value = (
+            'google/template/postprocessors/metric-file-aggregate-disabled'
+        )
         tf_templates.append(f'{template_key}={template_value}')
     return ' '.join(['--template:map %s' % x for x in tf_templates])
 

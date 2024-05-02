@@ -18,22 +18,6 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-java_library_host {
-    name: "atest-tradefed-shell",
-    java_resource_dirs: ["res"],
-}
-
-tradefed_binary_host {
-    name: "atest-tradefed",
-    short_name: "ATEST",
-    full_name: "ATest Test Suite",
-    static_libs: ["atest-tradefed-shell"],
-    required: [
-        "atest_tradefed.sh",
-        "atest_script_help.sh",
-    ],
-}
-
 // Attributes common to both atest and atest_flag_list_generator.
 python_defaults {
     name: "atest_defaults",
@@ -76,6 +60,45 @@ python_binary_host {
     dist: {
         targets: ["droidcore"],
     },
+    version: {
+        py3: {
+            // TODO(b/271346015): Enable embedded_launcher
+            embedded_launcher: false,
+        },
+    },
+}
+
+python_binary_host {
+    name: "atest-beta",
+    defaults: ["atest_defaults"],
+    main: "atest_main.py",
+    data: [
+        ":atest_flag_list_for_completion",
+        ":atest_log_uploader",
+    ],
+    stem: "atest-beta-dev",
+    libs: [
+        "atest_ca_certs_locater",
+    ],
+    version: {
+        py3: {
+            embedded_launcher: true,
+        },
+    },
+}
+
+python_binary_host {
+    name: "atest_log_uploader",
+    defaults: ["atest_defaults"],
+    main: "logstorage/log_uploader.py",
+    libs: [
+        "atest_ca_certs_locater",
+    ],
+    version: {
+        py3: {
+            embedded_launcher: true,
+        },
+    },
 }
 
 // A helper binary used to generate the atest_flag_list_for_completion.txt
@@ -87,6 +110,11 @@ python_binary_host {
     name: "atest_flag_list_generator",
     defaults: ["atest_defaults"],
     main: "atest_flag_list_generator.py",
+    version: {
+        py3: {
+            embedded_launcher: true,
+        },
+    },
 }
 
 genrule {
@@ -153,6 +181,8 @@ python_test_host {
     libs: [
         "asuite_proto",
         "pyfakefs",
+        "py-google-api-python-client",
+        "py-oauth2client",
         "tradefed-protos-py",
         "pyyaml",
     ],
@@ -164,14 +194,4 @@ python_test_host {
             enabled: true,
         },
     },
-}
-
-sh_binary_host {
-    name: "atest_tradefed.sh",
-    src: "atest_tradefed.sh",
-}
-
-sh_binary_host {
-    name: "atest_script_help.sh",
-    src: "atest_script_help.sh",
 }
