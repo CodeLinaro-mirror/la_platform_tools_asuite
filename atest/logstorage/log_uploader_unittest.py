@@ -88,11 +88,20 @@ class LogUploaderModuleTest(unittest.TestCase):
       self, mock_process
   ):
     self._set_upload_constants_available(True)
-    self._set_upload_env_var(None)
+    self._set_upload_env_var('false')
 
     log_uploader.upload_logs_detached(pathlib.Path('any'))
 
     mock_process.assert_not_called()
+
+  @patch('multiprocessing.Process.__new__')
+  def test_upload_logs_detached_process_started_by_default(self, mock_process):
+    self._set_upload_constants_available(True)
+    self._set_upload_env_var(None)
+
+    log_uploader.upload_logs_detached(pathlib.Path('any'))
+
+    mock_process.assert_called_once()
 
   def _set_upload_env_var(self, value) -> None:
     """Set upload environment variable."""
@@ -118,7 +127,9 @@ class LogUploaderTest(fake_filesystem_unittest.TestCase):
     self.fs.create_file(file_path)
     fake_client = self._FakeUploadingClient()
 
-    log_uploader._LogUploadSession(fake_client).upload_single_file(file_path)
+    log_uploader._LogUploadSession(
+        'any_run_id', fake_client
+    ).upload_single_file(file_path)
 
     self.assertEqual(
         fake_client.get_received_upload_artifact_arguments()[0]['resource_id'],
@@ -130,7 +141,9 @@ class LogUploaderTest(fake_filesystem_unittest.TestCase):
     self.fs.create_file(file_path)
     fake_client = self._FakeUploadingClient()
 
-    log_uploader._LogUploadSession(fake_client).upload_single_file(file_path)
+    log_uploader._LogUploadSession(
+        'any_run_id', fake_client
+    ).upload_single_file(file_path)
 
     self.assertEqual(
         fake_client.get_received_upload_artifact_arguments()[0]['metadata'][
@@ -144,7 +157,9 @@ class LogUploaderTest(fake_filesystem_unittest.TestCase):
     self.fs.create_file(file_path)
     fake_client = self._FakeUploadingClient()
 
-    log_uploader._LogUploadSession(fake_client).upload_single_file(file_path)
+    log_uploader._LogUploadSession(
+        'any_run_id', fake_client
+    ).upload_single_file(file_path)
 
     self.assertEqual(
         fake_client.get_received_upload_artifact_arguments()[0]['metadata'][
@@ -161,7 +176,7 @@ class LogUploaderTest(fake_filesystem_unittest.TestCase):
     self.fs.create_file(file_path1)
     self.fs.create_file(file_path2)
     fake_client = self._FakeUploadingClient()
-    suj = log_uploader._LogUploadSession(fake_client)
+    suj = log_uploader._LogUploadSession('any_run_id', fake_client)
 
     suj.upload_single_file(file_path1)
     suj.upload_single_file(file_path2)
@@ -179,7 +194,7 @@ class LogUploaderTest(fake_filesystem_unittest.TestCase):
     self.fs.create_file(file_path1)
     self.fs.create_file(file_path2)
     fake_client = self._FakeUploadingClient()
-    suj = log_uploader._LogUploadSession(fake_client)
+    suj = log_uploader._LogUploadSession('any_run_id', fake_client)
     suj.upload_single_file(file_path1)
 
     suj.upload_single_file(file_path2)
@@ -194,7 +209,9 @@ class LogUploaderTest(fake_filesystem_unittest.TestCase):
     self.fs.create_dir(empty_dir)
     fake_client = self._FakeUploadingClient()
 
-    log_uploader._LogUploadSession(fake_client).upload_directory(empty_dir)
+    log_uploader._LogUploadSession('any_run_id', fake_client).upload_directory(
+        empty_dir
+    )
 
     self.assertEqual(
         len(fake_client.get_received_upload_artifact_arguments()), 0
@@ -206,7 +223,9 @@ class LogUploaderTest(fake_filesystem_unittest.TestCase):
     self.fs.create_file(file_path)
     fake_client = self._FakeUploadingClient()
 
-    log_uploader._LogUploadSession(fake_client).upload_directory(dir_path)
+    log_uploader._LogUploadSession('any_run_id', fake_client).upload_directory(
+        dir_path
+    )
 
     self.assertEqual(
         len(fake_client.get_received_upload_artifact_arguments()), 1
@@ -220,7 +239,9 @@ class LogUploaderTest(fake_filesystem_unittest.TestCase):
     self.fs.create_file(file_path2)
     fake_client = self._FakeUploadingClient()
 
-    log_uploader._LogUploadSession(fake_client).upload_directory(dir_path)
+    log_uploader._LogUploadSession('any_run_id', fake_client).upload_directory(
+        dir_path
+    )
 
     self.assertEqual(
         len(fake_client.get_received_upload_artifact_arguments()), 2
@@ -232,7 +253,9 @@ class LogUploaderTest(fake_filesystem_unittest.TestCase):
     self.fs.create_file(file_path)
     fake_client = self._FakeUploadingClient()
 
-    log_uploader._LogUploadSession(fake_client).upload_directory(dir_path)
+    log_uploader._LogUploadSession('any_run_id', fake_client).upload_directory(
+        dir_path
+    )
 
     self.assertEqual(
         fake_client.get_received_upload_artifact_arguments()[0][
@@ -250,7 +273,9 @@ class LogUploaderTest(fake_filesystem_unittest.TestCase):
     self.fs.create_symlink(link_path, target_path)
     fake_client = self._FakeUploadingClient()
 
-    log_uploader._LogUploadSession(fake_client).upload_directory(dir_path)
+    log_uploader._LogUploadSession('any_run_id', fake_client).upload_directory(
+        dir_path
+    )
 
     self.assertEqual(
         fake_client.get_received_upload_artifact_arguments()[0][
@@ -270,7 +295,9 @@ class LogUploaderTest(fake_filesystem_unittest.TestCase):
     self.fs.create_symlink(link_path, target_path)
     fake_client = self._FakeUploadingClient()
 
-    log_uploader._LogUploadSession(fake_client).upload_directory(dir_path)
+    log_uploader._LogUploadSession('any_run_id', fake_client).upload_directory(
+        dir_path
+    )
 
     self.assertEqual(
         fake_client.get_received_upload_artifact_arguments()[0][
