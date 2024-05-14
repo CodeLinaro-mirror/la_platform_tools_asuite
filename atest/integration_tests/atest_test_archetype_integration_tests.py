@@ -20,11 +20,13 @@ import atest_integration_test
 
 
 class DevicelessJavaHostTest(atest_integration_test.AtestTestCase):
+  _TARGET_NAME = 'deviceless_java_host_test'
 
   def test_passed_failed_counts(self):
     _verify_test_passed_failed_ignored_counts(
         self,
-        target_name='deviceless_java_host_test',
+        atest_command=self._TARGET_NAME + ' --no-bazel-mode --host',
+        is_device_required=False,
         expected_passed_count=2,
         expected_failed_count=1,
         expected_ignored_count=0,
@@ -32,11 +34,13 @@ class DevicelessJavaHostTest(atest_integration_test.AtestTestCase):
 
 
 class DeviceLessPythonHostTest(atest_integration_test.AtestTestCase):
+  _TARGET_NAME = 'deviceless_python_host_test'
 
   def test_passed_failed_counts(self):
     _verify_test_passed_failed_ignored_counts(
         self,
-        target_name='deviceless_python_host_test',
+        atest_command=self._TARGET_NAME + ' --no-bazel-mode --host',
+        is_device_required=False,
         expected_passed_count=2,
         expected_failed_count=1,
         expected_ignored_count=0,
@@ -44,11 +48,13 @@ class DeviceLessPythonHostTest(atest_integration_test.AtestTestCase):
 
 
 class JavaInstrumentationTest(atest_integration_test.AtestTestCase):
+  _TARGET_NAME = 'java_instrumentation_test'
 
   def test_passed_failed_counts(self):
     _verify_test_passed_failed_ignored_counts(
         self,
-        target_name='java_instrumentation_test',
+        atest_command=self._TARGET_NAME,
+        is_device_required=True,
         expected_passed_count=2,
         expected_failed_count=1,
         expected_ignored_count=0,
@@ -57,11 +63,23 @@ class JavaInstrumentationTest(atest_integration_test.AtestTestCase):
 
 def _verify_test_passed_failed_ignored_counts(
     test_case: atest_integration_test.AtestTestCase,
-    target_name: str,
+    atest_command: str,
+    is_device_required: bool,
     expected_passed_count: int,
     expected_failed_count: int,
     expected_ignored_count: int,
 ):
+  """Verify an atest command finished with expected result counts.
+
+  Args:
+      test_case: The reference to the calling test case.
+      atest_command: The atest command to execute. Note: exclude 'atest',
+        'atest-dev', '-b', '-i', and '-t' from it.
+      is_device_required: Whether the test requires a device.
+      expected_passed_count: Number of expected passed count.
+      expected_failed_count: Number of expected failed count.
+      expected_ignored_count: Number of expected ignored count.
+  """
 
   script = test_case.create_atest_script()
 
@@ -70,14 +88,17 @@ def _verify_test_passed_failed_ignored_counts(
   ) -> atest_integration_test.StepOutput:
 
     test_case.run_atest_command(
-        target_name + ' -cb', step_in
+        atest_command + ' -cb', step_in, include_device_serial=False
     ).check_returncode()
 
     return test_case.create_step_output()
 
   def test_step(step_in: atest_integration_test.StepInput) -> None:
     result = test_case.run_atest_command(
-        target_name + ' -it --no-bazel-mode', step_in, print_output=False
+        atest_command + ' -it',
+        step_in,
+        include_device_serial=is_device_required,
+        print_output=False,
     )
 
     test_case.assertEqual(result.get_passed_count(), expected_passed_count)
