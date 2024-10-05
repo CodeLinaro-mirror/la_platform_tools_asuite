@@ -95,8 +95,6 @@ _WILDCARD_CHARS = {'?', '*'}
 
 _WILDCARD_FILTER_RE = re.compile(r'.*[?|*]$')
 _REGULAR_FILTER_RE = re.compile(r'.*\w$')
-# Printed before the html log line. May be used in tests to parse the html path.
-_HTML_LOG_PRINT_PREFIX = 'To access logs, press "ctrl" and click on'
 
 SUGGESTIONS = {
     # (b/177626045) If Atest does not install target application properly.
@@ -503,7 +501,6 @@ def is_test_mapping(args):
   return all((len(args.tests) == 1, args.tests[0][0] == ':'))
 
 
-@atest_decorator.static_var('cached_has_colors', {})
 def _has_colors(stream):
   """Check the output stream is colorful.
 
@@ -513,21 +510,11 @@ def _has_colors(stream):
   Returns:
       True if the file stream can interpreter the ANSI color code.
   """
-  cached_has_colors = _has_colors.cached_has_colors
-  if stream in cached_has_colors:
-    return cached_has_colors[stream]
-  cached_has_colors[stream] = True
   # Following from Python cookbook, #475186
-  if not hasattr(stream, 'isatty'):
-    cached_has_colors[stream] = False
-    return False
-  if not stream.isatty():
-    # Auto color only on TTYs
-    cached_has_colors[stream] = False
-    return False
+  # Auto color only on TTYs
   # curses.tigetnum() cannot be used for telling supported color numbers
   # because it does not come with the prebuilt py3-cmd.
-  return cached_has_colors[stream]
+  return getattr(stream, 'isatty', lambda: False)()
 
 
 def colorize(text, color, bp_color=None):
@@ -1921,11 +1908,11 @@ def get_manifest_info(manifest: Path) -> Dict[str, Any]:
 
 
 # pylint: disable=broad-except
-def generate_print_result_html(result_file: Path):
+def generate_result_html(result_file: Path) -> Path:
   """Generate a html that collects all log files."""
   result_file = Path(result_file)
-  search_dir = Path(result_file).parent.joinpath('log')
-  result_html = Path(search_dir, 'test_logs.html')
+  search_dir = Path(result_file).parent
+  result_html = Path(result_file.parent, 'local_log_file_list.html')
   try:
     logs = sorted(find_files(str(search_dir), file_name='*', followlinks=True))
     with open(result_html, 'w', encoding='utf-8') as cache:
@@ -1938,15 +1925,14 @@ def generate_print_result_html(result_file: Path):
       for log in logs:
         cache.write(
             f'<p><a href="{urllib.parse.quote(log)}">'
-            f'{html.escape(Path(log).name)}</a></p>'
+            f'{html.escape(Path(log).relative_to(search_dir).as_posix())}</a></p>'
         )
       cache.write('</body></html>')
-    print(
-        f'\n{_HTML_LOG_PRINT_PREFIX}\n{mark_magenta(f"file://{result_html}")}\n'
-    )
     send_tradeded_elapsed_time_metric(search_dir)
+    return result_html
   except Exception as e:
     logging.debug('Did not generate log html for reason: %s', e)
+    return None
 
 
 def send_tradeded_elapsed_time_metric(search_dir: Path):

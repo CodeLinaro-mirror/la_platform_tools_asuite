@@ -546,34 +546,6 @@ def _validate_args(args):
     sys.exit(ExitCode.INVALID_TM_ARGS)
 
 
-def _print_module_info_from_module_name(mod_info, module_name):
-  """print out the related module_info for a module_name.
-
-  Args:
-      mod_info: ModuleInfo object.
-      module_name: A string of module.
-
-  Returns:
-      True if the module_info is found.
-  """
-  title_mapping = collections.OrderedDict()
-  title_mapping[constants.MODULE_COMPATIBILITY_SUITES] = 'Compatibility suite'
-  title_mapping[constants.MODULE_PATH] = 'Source code path'
-  title_mapping[constants.MODULE_INSTALLED] = 'Installed path'
-  target_module_info = mod_info.get_module_info(module_name)
-  is_module_found = False
-  if target_module_info:
-    atest_utils.colorful_print(module_name, constants.GREEN)
-    for title_key in title_mapping:
-      atest_utils.colorful_print(
-          '\t%s' % title_mapping[title_key], constants.CYAN
-      )
-      for info_value in target_module_info[title_key]:
-        print('\t\t{}'.format(info_value))
-    is_module_found = True
-  return is_module_found
-
-
 def _print_deprecation_warning(arg_to_deprecate: str):
   """For features that are up for deprecation in the near future, print a message
 
@@ -1020,7 +992,7 @@ def _main(
     )
     args.bazel_mode = False
 
-  proc_idx = atest_utils.start_threading(lambda: print)
+  proc_idx = None
   # Do not index targets while the users intend to dry-run tests.
   if need_run_index_targets(args):
     logging.debug('Starting to index targets in a background thread.')
@@ -1048,11 +1020,20 @@ def _main(
     _print_testable_modules(mod_info, args.list_modules)
     return ExitCode.SUCCESS
   test_infos = set()
-  # (b/242567487) index_targets may finish after cli_translator; to
-  # mitigate the overhead, the main waits until it finished when no index
-  # files are available (e.g. fresh repo sync)
-  if proc_idx.is_alive() and not indexing.Indices().has_all_indices():
+
+  if (
+      proc_idx
+      and proc_idx.is_alive()
+      and not indexing.Indices().has_all_indices()
+  ):
+    start_wait_for_indexing = time.time()
+    print('Waiting for the module indexing to complete.')
     proc_idx.join()
+    metrics.LocalDetectEvent(
+        detect_type=DetectType.WAIT_FOR_INDEXING_MS,
+        result=int(round((time.time() - start_wait_for_indexing) * 1000)),
+    )
+
   find_start = time.time()
   test_infos = translator.translate(args)
 
@@ -1118,7 +1099,7 @@ def _main(
     )
     metrics.LocalDetectEvent(
         detect_type=DetectType.BUILD_TIME_PER_TARGET,
-        result=int(build_duration / len(build_targets)),
+        result=int(round(build_duration / len(build_targets))),
     )
     rebuild_module_info = DetectType.NOT_REBUILD_MODULE_INFO
     if is_clean:
@@ -1128,7 +1109,7 @@ def _main(
     elif smart_rebuild:
       rebuild_module_info = DetectType.SMART_REBUILD_MODULE_INFO
     metrics.LocalDetectEvent(
-        detect_type=rebuild_module_info, result=int(build_duration)
+        detect_type=rebuild_module_info, result=int(round(build_duration))
     )
     if not success:
       return ExitCode.BUILD_FAILURE
@@ -1146,15 +1127,15 @@ def _main(
   device_update_method.update(extra_args.get(constants.SERIAL, []))
 
   tests_exit_code = ExitCode.SUCCESS
-  test_start = time.time()
   if steps.has_test():
+    test_start = time.time()
     # Only send duration to metrics when no --build.
     if not steps.has_build():
       _init_and_find = time.time() - _begin_time
       logging.debug('Initiation and finding tests took %ss', _init_and_find)
       metrics.LocalDetectEvent(
           detect_type=DetectType.INIT_AND_FIND_MS,
-          result=int(_init_and_find * 1000),
+          result=int(round(_init_and_find * 1000)),
       )
 
     tests_exit_code = test_execution_plan.execute()
@@ -1168,18 +1149,18 @@ def _main(
           args.code_under_test,
       )
 
-  metrics.RunTestsFinishEvent(
-      duration=metrics_utils.convert_duration(time.time() - test_start)
-  )
-  preparation_time = atest_execution_info.preparation_time(test_start)
-  if preparation_time:
-    # Send the preparation time only if it's set.
-    metrics.RunnerFinishEvent(
-        duration=metrics_utils.convert_duration(preparation_time),
-        success=True,
-        runner_name=constants.TF_PREPARATION,
-        test=[],
+    metrics.RunTestsFinishEvent(
+        duration=metrics_utils.convert_duration(time.time() - test_start)
     )
+    preparation_time = atest_execution_info.preparation_time(test_start)
+    if preparation_time:
+      # Send the preparation time only if it's set.
+      metrics.RunnerFinishEvent(
+          duration=metrics_utils.convert_duration(preparation_time),
+          success=True,
+          runner_name=constants.TF_PREPARATION,
+          test=[],
+      )
   if tests_exit_code != ExitCode.SUCCESS:
     tests_exit_code = ExitCode.TEST_FAILURE
 
@@ -1502,6 +1483,24 @@ if __name__ == '__main__':
     metrics.LocalDetectEvent(detect_type=DetectType.ATEST_CONFIG, result=0)
 
   args = _parse_args(final_args)
+
+  # Checks whether any empty serial strings exist in the argument array.
+  if args.serial and not all(args.serial):
+    atest_utils.print_and_log_warning(
+        'Empty device serial specified via command-line argument. This may'
+        ' cause unexpected behavior in TradeFed. If not targeting a specific'
+        ' device, consider remove the serial argument. See b/330365573 for'
+        ' details.'
+    )
+  # Checks whether ANDROID_SERIAL environment variable is set to an empty string.
+  if 'ANDROID_SERIAL' in os.environ and not os.environ['ANDROID_SERIAL']:
+    atest_utils.print_and_log_warning(
+        'Empty device serial detected in the ANDROID_SERIAL environment'
+        ' variable. This may causes unexpected behavior in TradeFed. If not'
+        ' targeting a specific device, consider unset the ANDROID_SERIAL'
+        ' environment variable. See b/330365573 for details.'
+    )
+
   atest_configs.GLOBAL_ARGS = args
   _configure_logging(args.verbose, results_dir)
 
@@ -1527,8 +1526,6 @@ if __name__ == '__main__':
       metrics.LocalDetectEvent(
           detect_type=DetectType.BUG_DETECTED, result=detector.caught_result
       )
-      if result_file:
-        print("Run 'atest --history' to review test result history.")
 
   banner_printer.print()
 
