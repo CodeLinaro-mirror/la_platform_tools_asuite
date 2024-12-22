@@ -184,7 +184,7 @@ class RolloutControlledFeature:
 
 deprecate_bazel_mode = RolloutControlledFeature(
     name='Deprecate Bazel Mode',
-    rollout_percentage=60,
+    rollout_percentage=100,
     env_control_flag='DEPRECATE_BAZEL_MODE',
     feature_id=1,
 )
@@ -195,15 +195,13 @@ rolling_tf_subprocess_output = RolloutControlledFeature(
     env_control_flag='ROLLING_TF_SUBPROCESS_OUTPUT',
     feature_id=2,
     print_message=(
-        'You are one of the first users receiving the "Rolling subprocess'
-        ' output" feature. If you are happy with it, please +1 on'
-        ' http://b/380460196.'
+        'Rolling subprocess output is currently enabled: http://b/380460196.'
     ),
 )
 
 tf_preparer_incremental_setup = RolloutControlledFeature(
     name='TradeFed preparer incremental setup',
-    rollout_percentage=0,
+    rollout_percentage=10,
     env_control_flag='TF_PREPARER_INCREMENTAL_SETUP',
     feature_id=3,
     print_message=(
