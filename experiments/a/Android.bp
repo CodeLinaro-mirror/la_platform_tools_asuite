@@ -20,6 +20,11 @@ python_binary_host {
         "**/*.py",
     ],
     libs: [],
+    version: {
+        py3: {
+            embedded_launcher: true,
+        },
+    },
 }
 
 python_test_host {

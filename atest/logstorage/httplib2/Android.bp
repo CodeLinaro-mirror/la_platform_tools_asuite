@@ -42,6 +42,11 @@ python_test_host {
     test_options: {
         unit_test: true,
     },
+    version: {
+        py3: {
+            embedded_launcher: true,
+        },
+    },
 }
 
 python_test_host {
@@ -50,5 +55,9 @@ python_test_host {
     test_options: {
         unit_test: true,
     },
-    embedded_launcher: false,
+    version: {
+        py3: {
+            embedded_launcher: false,
+        },
+    },
 }
