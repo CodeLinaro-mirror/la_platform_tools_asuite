@@ -342,6 +342,7 @@ class AtestMainUnitTests(unittest.TestCase):
   )
   def test_run_build_step_exits_normally_when_no_build_target(self, _):
     pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=[])
 
     self.assertIsNone(pseudo_atest_main._run_build_step())
 
@@ -381,6 +382,89 @@ class AtestMainUnitTests(unittest.TestCase):
     self.assertEqual(
         pseudo_atest_main._check_envs_and_args(),
         ExitCode.OUTSIDE_REPO,
+    )
+
+  @mock.patch.object(
+      atest_main, '_missing_environment_variables', return_value=False
+  )
+  @mock.patch('os.getenv', return_value='/tmp/my_android_build_root')
+  @mock.patch('os.getcwd', return_value='/tmp/my_android_build_root/tools')
+  def test_check_envs_and_args_cross_branch_args_valid_with_bid(
+      self, _, __, ___
+  ):
+    """Tests cross-branch args are valid with build target and bid."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(
+        argv=[
+            '--test_build_target',
+            'test_suites_arm64',
+            '--test_build_id',
+            '123456',
+        ]
+    )
+
+    self.assertIsNone(pseudo_atest_main._check_envs_and_args())
+
+  @mock.patch.object(
+      atest_main, '_missing_environment_variables', return_value=False
+  )
+  @mock.patch('os.getenv', return_value='/tmp/my_android_build_root')
+  @mock.patch('os.getcwd', return_value='/tmp/my_android_build_root/tools')
+  def test_check_envs_and_args_cross_branch_args_valid_with_branch(
+      self, _, __, ___
+  ):
+    """Tests cross-branch args are valid with build target and branch."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(
+        argv=[
+            '--test_build_target',
+            'test_suites_arm64',
+            '--test_branch',
+            'git_main',
+        ]
+    )
+
+    self.assertIsNone(pseudo_atest_main._check_envs_and_args())
+
+  @mock.patch.object(
+      atest_main, '_missing_environment_variables', return_value=False
+  )
+  @mock.patch('os.getenv', return_value='/tmp/my_android_build_root')
+  @mock.patch('os.getcwd', return_value='/tmp/my_android_build_root/tools')
+  def test_check_envs_and_args_cross_branch_args_no_target(self, _, __, ___):
+    """Tests cross-branch args are invalid without build target."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(
+        argv=[
+            '--test_build_id',
+            '123456',
+            '--test_branch',
+            'git_main',
+        ]
+    )
+
+    self.assertEqual(
+        pseudo_atest_main._check_envs_and_args(),
+        ExitCode.INVALID_CROSS_BRANCH_ARGS,
+    )
+
+  @mock.patch.object(
+      atest_main, '_missing_environment_variables', return_value=False
+  )
+  @mock.patch('os.getenv', return_value='/tmp/my_android_build_root')
+  @mock.patch('os.getcwd', return_value='/tmp/my_android_build_root/tools')
+  def test_check_envs_and_args_cross_branch_args_no_bid_branch(
+      self, _, __, ___
+  ):
+    """Tests cross-branch args are invalid without branch and bid."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(
+        argv=['--test_build_target', 'test_suites_arm64']
+    )
+
+    self.assertEqual(
+        pseudo_atest_main._check_envs_and_args(),
+        ExitCode.INVALID_CROSS_BRANCH_ARGS,
     )
 
 
