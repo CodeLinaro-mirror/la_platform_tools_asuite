@@ -319,13 +319,18 @@ def extract_test_path(output, methods=None):
   return extract_selected_tests(sorted(list(verified_tests)))
 
 
-def extract_selected_tests(tests: Iterable, default_all=False) -> List[str]:
+def extract_selected_tests(
+    tests: Iterable,
+    default_all=False,
+    name_func=lambda x: x,
+    target_test_identifier=None,
+) -> List[str]:
   """Extract the test path from the tests.
 
   Return the test to run from tests. If more than one option, prompt the user
   to select multiple ones. Supporting formats:
   - A string for the auxiliary menu: A for All, C for Cancel
-  - An integer. E.g. 0
+  - An integer. E.g. 1
   - Comma-separated integers. E.g. 1,3,5
   - A range of integers denoted by the starting integer separated from
     the end integer by a dash, '-'. E.g. 1-3
@@ -333,21 +338,29 @@ def extract_selected_tests(tests: Iterable, default_all=False) -> List[str]:
   Args:
       tests: A string list which contains multiple test paths.
       default_all: A bool that indicates whether to select all tests.
+      name_func: A function that returns the name of the test. This is used to
+        sort the tests and print them out in the menu. Default is the identity
+        function (lambda x: x).
 
   Returns:
       A string list of paths.
   """
-  tests = sorted(list(tests))
+  tests = sorted(list(tests), key=name_func)
   count = len(tests)
   if default_all or count <= 1:
     return tests if count else None
 
   extracted_tests = set()
   auxiliary_menu = [f'{_ALL_OPTION}: All', f'{_CANCEL_OPTION}: Cancel']
-  numbered_list = ['%s: %s' % (i, t) for i, t in enumerate(tests)]
+  numbered_list = [
+      '%s: %s' % (i + 1, name_func(t)) for i, t in enumerate(tests)
+  ]
   print(
-      'Multiple tests found:\n{0}'.format(
-          '\n'.join(auxiliary_menu + numbered_list)
+      'Multiple tests found{0}:\n{1}'.format(
+          f' for {atest_utils.mark_cyan(target_test_identifier)}'
+          if target_test_identifier
+          else '',
+          '\n'.join(auxiliary_menu + numbered_list),
       )
   )
 
@@ -360,8 +373,8 @@ def extract_selected_tests(tests: Iterable, default_all=False) -> List[str]:
     sys.exit(0)
   else:
     extracted_tests = {
-        tests[index]
-        for index in get_selected_indices(answer, limit=len(numbered_list) - 1)
+        tests[_convert_indices_to_0_based_list(index)]
+        for index in get_selected_indices(answer, limit=len(numbered_list))
     }
   metrics.LocalDetectEvent(
       detect_type=DetectType.INTERACTIVE_SELECTION,
@@ -371,13 +384,26 @@ def extract_selected_tests(tests: Iterable, default_all=False) -> List[str]:
   return list(extracted_tests)
 
 
+def _convert_indices_to_0_based_list(index: int) -> int:
+  """Convert a single index to a 0-based integer.
+
+  Args:
+      index: A single index.
+
+  Returns:
+      The 0-based integer corresponding to the given index. If the index is
+      zero or less, it is returned as is.
+  """
+  return index - 1 if index > 0 else index
+
+
 def get_multiple_selection_answer() -> str:
   """Get the answer from the user input."""
   try:
     return input(
         'Please select an option.'
         '\n(multiple selection is supported, '
-        "e.g. '1' or '0,1' or '0-2'): "
+        "e.g. '1' or '1,2' or '1-3'): "
     )
   except KeyboardInterrupt:
     return _CANCEL_OPTION
@@ -387,12 +413,12 @@ def get_selected_indices(string: str, limit: int = None) -> Set[int]:
   """Method which flattens and dedups the given string to a set of integer.
 
   This method is also capable to convert '5-2' to {2,3,4,5}. e.g.
-  '0, 2-5, 5-3' -> {0, 2, 3, 4, 5}
+  '1, 2-5, 5-3' -> {1, 2, 3, 4, 5}
 
   If the given string contains non-numerical string, returns an empty set.
 
   Args:
-      string: a given string, e.g. '0, 2-5'
+      string: a given string, e.g. '1, 2-5'
       limit: an integer that every parsed number cannot exceed.
 
   Returns:
@@ -987,6 +1013,24 @@ def search_integration_dirs(name, int_dirs):
   Args:
       name: A string of plan name needed to be found.
       int_dirs: A list of path needed to be searched.
+
+  Returns:
+      A list of the test path.
+      Ask user to select if multiple tests are found.
+      None if no matched test found.
+  """
+  if type(int_dirs) == list:
+    int_dirs = tuple(int_dirs)
+  return _search_integration_dirs(name, int_dirs)
+
+
+@functools.lru_cache(maxsize=102400)
+def _search_integration_dirs(name, int_dirs):
+  """Search integration dirs for name and return full path.
+
+  Args:
+      name: A string of plan name needed to be found.
+      int_dirs: A tuple of path needed to be searched.
 
   Returns:
       A list of the test path.
