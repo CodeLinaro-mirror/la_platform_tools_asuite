@@ -65,7 +65,6 @@ from atest.metrics import metrics_utils
 from atest.test_finders import test_finder_utils
 from atest.test_finders import test_info
 from atest.test_finders.smart_test_finder import smart_test_finder
-from atest.test_finders.test_info import TestInfo
 from atest.test_runner_invocation import TestRunnerInvocation
 from atest.tools import fetch_artifact
 from atest.tools import indexing
@@ -89,7 +88,6 @@ RUN_HEADER_FMT = '\nRunning %(test_count)d %(test_type)s.'
 TEST_COUNT = 'test_count'
 TEST_TYPE = 'test_type'
 END_OF_OPTION = '--'
-HAS_IGNORED_ARGS = False
 # Conditions that atest should exit without sending result to metrics.
 EXIT_CODES_BEFORE_TEST = [
     ExitCode.ENV_NOT_SETUP,
@@ -146,7 +144,7 @@ def _get_args_from_config():
   config file for it without any effective options.
 
   Returns:
-      A list read from the config file.
+      A tuple of (list of args, bool if args were ignored).
   """
   _config = atest_utils.get_config_folder().joinpath('config')
   if not _config.parent.is_dir():
@@ -155,16 +153,11 @@ def _get_args_from_config():
   if not _config.is_file():
     with open(_config, 'w+', encoding='utf8') as cache:
       cache.write(constants.ATEST_EXAMPLE_ARGS)
-    return args
-  warning = 'Line {} contains {} and will be ignored.'
+    return args, False
   print(
-      '\n{} {}'.format(
-          atest_utils.mark_cyan('Reading config:'),
-          _config,
-      )
+      f'\n{atest_utils.mark_cyan("Reading config:")} {_config}'
   )
-  # pylint: disable=global-statement:
-  global HAS_IGNORED_ARGS
+  has_ignored_args = False
   with open(_config, 'r', encoding='utf8') as cache:
     for entry in cache:
       # Strip comments.
@@ -173,26 +166,15 @@ def _get_args_from_config():
       if arg_in_line.startswith('-'):
         # Process argument that contains whitespaces.
         # e.g. ["--serial foo"] -> ["--serial", "foo"]
-        if len(arg_in_line.split()) > 1:
-          # remove "--" to avoid messing up atest/tradefed commands.
-          if END_OF_OPTION in arg_in_line.split():
-            HAS_IGNORED_ARGS = True
-            print(
-                warning.format(
-                    atest_utils.mark_yellow(arg_in_line), END_OF_OPTION
-                )
-            )
-          args.extend(arg_in_line.split())
-        else:
-          if END_OF_OPTION == arg_in_line:
-            HAS_IGNORED_ARGS = True
-            print(
-                warning.format(
-                    atest_utils.mark_yellow(arg_in_line), END_OF_OPTION
-                )
-            )
-          args.append(arg_in_line)
-  return args
+        split_arg_in_line = arg_in_line.split()
+        if END_OF_OPTION in split_arg_in_line:
+          has_ignored_args = True
+          print(
+              f'Line {atest_utils.mark_yellow(arg_in_line)} contains '
+              f'{END_OF_OPTION} and will be ignored.'
+          )
+        args.extend(split_arg_in_line)
+  return args, has_ignored_args
 
 
 def _parse_args(argv: List[str]) -> argparse.Namespace:
@@ -273,9 +255,7 @@ def _missing_environment_variables():
   Returns:
       List of strings of any missing environment variables.
   """
-  missing = list(
-      filter(None, [x for x in EXPECTED_VARS if not os.environ.get(x)])
-  )
+  missing = [x for x in EXPECTED_VARS if x and not os.environ.get(x)]
   if missing:
     atest_utils.print_and_log_error(
         "Local environment doesn't appear to have been "
@@ -354,13 +334,14 @@ def get_extra_args(args) -> Dict[str, str]:
     raise AttributeError(
         '%s object has no attribute %s' % (type(args).__name__, not_match)
     )
-  extra_args.update({
-      arg_maps.get(k): v for k, v in vars(args).items() if arg_maps.get(k) and v
-  })
+  for arg_name, const_name in arg_maps.items():
+    arg_value = getattr(args, arg_name, None)
+    if arg_value:
+      extra_args[const_name] = arg_value
   return extra_args
 
 
-def _validate_exec_mode(args, test_infos: list[TestInfo], host_tests=None):
+def _validate_exec_mode(args, test_infos: list[test_info.TestInfo], host_tests=None):
   """Validate all test execution modes are not in conflict.
 
   Exit the program with INVALID_EXEC_MODE code if the desired is a host-side
@@ -671,15 +652,16 @@ class _AtestMain:
   def run(self):
     self._results_dir = make_test_run_dir()
 
+    config_args, has_ignored_args = _get_args_from_config()
     if END_OF_OPTION in self._argv:
       end_position = self._argv.index(END_OF_OPTION)
       final_args = [
           *self._argv[1:end_position],
-          *_get_args_from_config(),
+          *config_args,
           *self._argv[end_position:],
       ]
     else:
-      final_args = [*self._argv[1:], *_get_args_from_config()]
+      final_args = [*self._argv[1:], *config_args]
     if final_args != self._argv[1:]:
       print(
           'The actual cmd will be: \n\t{}\n'.format(
@@ -687,7 +669,7 @@ class _AtestMain:
           )
       )
       metrics.LocalDetectEvent(detect_type=DetectType.ATEST_CONFIG, result=1)
-      if HAS_IGNORED_ARGS:
+      if has_ignored_args:
         atest_utils.colorful_print(
             'Please correct the config and try again.', constants.YELLOW
         )
@@ -776,13 +758,11 @@ class _AtestMain:
     Returns:
         Exit code if any setup or arg is invalid. None otherwise.
     """
-    if (
-        not os.getenv(constants.ANDROID_BUILD_TOP, ' ') in os.getcwd()
-    ):  # Not under android root.
+    android_build_top = os.getenv(constants.ANDROID_BUILD_TOP)
+    if not android_build_top or android_build_top not in os.getcwd():
+      # Not under android root.
       atest_utils.colorful_print(
-          '\nAtest must always work under ${}!'.format(
-              constants.ANDROID_BUILD_TOP
-          ),
+          f'\nAtest must always work under ${constants.ANDROID_BUILD_TOP}!',
           constants.RED,
       )
       return ExitCode.OUTSIDE_ROOT
@@ -806,20 +786,21 @@ class _AtestMain:
         )
         return ExitCode.OUTSIDE_REPO
 
-    if (
+    any_cross_branch_arg = (
         self._args.test_build_target
         or self._args.test_branch
         or self._args.test_build_id
-    ):
-      if not self._args.test_build_target or not (
-          self._args.test_branch or self._args.test_build_id
-      ):
-        atest_utils.colorful_print(
-            'Cross branch testing is enabled. --test_build_target and one of'
-            ' either --test_branch or --test_build_id are required.',
-            constants.RED,
-        )
-        return ExitCode.INVALID_CROSS_BRANCH_ARGS
+    )
+    required_cross_branch_args = self._args.test_build_target and (
+        self._args.test_branch or self._args.test_build_id
+    )
+    if any_cross_branch_arg and not required_cross_branch_args:
+      atest_utils.colorful_print(
+          'Cross branch testing is enabled. --test_build_target and one of'
+          ' either --test_branch or --test_build_id are required.',
+          constants.RED,
+      )
+      return ExitCode.INVALID_CROSS_BRANCH_ARGS
 
     # Checks whether ANDROID_SERIAL environment variable is set to an empty string.
     if 'ANDROID_SERIAL' in os.environ and not os.environ['ANDROID_SERIAL']:
@@ -923,10 +904,7 @@ class _AtestMain:
     Returns:
         A set of dependencies for the device update method.
     """
-    if not self._args.update_device:
-      return set()
-
-    if (
+    if not self._args.update_device or (
         self._test_execution_plan
         and not self._test_execution_plan.requires_device_update()
     ):
@@ -1298,13 +1276,13 @@ class _AtestMain:
 
     invalid_arg_exit_code = self._check_envs_and_args()
     if invalid_arg_exit_code is not None:
-      sys.exit(invalid_arg_exit_code)
+      return invalid_arg_exit_code
 
     self._send_start_event()
 
     no_action_exit_code = self._check_no_action_argument()
     if no_action_exit_code is not None:
-      sys.exit(no_action_exit_code)
+      return no_action_exit_code
 
     if self._args.list_modules:
       return self._handle_list_modules()
@@ -1633,23 +1611,17 @@ class _TestModuleExecutionPlan(_TestExecutionPlan):
 
   def execute(self) -> ExitCode:
 
+    reporter_kwargs = {
+        'collect_only': self.extra_args.get(constants.COLLECT_TESTS_ONLY),
+        'wait_for_debugger': atest_configs.GLOBAL_ARGS.wait_for_debugger,
+        'args': self._args,
+        'test_infos': self._test_infos,
+        'class_level_report': self._args.class_level_report,
+    }
     if self._args.smart_test_selection:
-      reporter = result_reporter.ResultReporter(
-          collect_only=self.extra_args.get(constants.COLLECT_TESTS_ONLY),
-          wait_for_debugger=atest_configs.GLOBAL_ARGS.wait_for_debugger,
-          args=self._args,
-          test_infos=self._test_infos,
-          class_level_report=True,
-          runner_errors_as_warnings=True,
-      )
-    else:
-      reporter = result_reporter.ResultReporter(
-          collect_only=self.extra_args.get(constants.COLLECT_TESTS_ONLY),
-          wait_for_debugger=atest_configs.GLOBAL_ARGS.wait_for_debugger,
-          args=self._args,
-          test_infos=self._test_infos,
-          class_level_report=self._args.class_level_report,
-      )
+      reporter_kwargs['class_level_report'] = True
+      reporter_kwargs['runner_errors_as_warnings'] = True
+    reporter = result_reporter.ResultReporter(**reporter_kwargs)
     reporter.print_starting_text()
 
     exit_code = ExitCode.SUCCESS
