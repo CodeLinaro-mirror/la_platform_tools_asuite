@@ -176,15 +176,15 @@ def has_cc_class(test_path):
       Boolean: has cc class in test_path or not.
   """
   with open_cc(test_path) as class_file:
-    content = class_file.read()
-    if re.findall(test_filter_utils.CC_CLASS_METHOD_RE, content):
-      return True
-    if re.findall(test_filter_utils.CC_FLAG_CLASS_METHOD_RE, content):
-      return True
-    if re.findall(test_filter_utils.CC_PARAM_CLASS_RE, content):
-      return True
-    if re.findall(test_filter_utils.TYPE_CC_CLASS_RE, content):
-      return True
+    for line in class_file:
+      if re.findall(test_filter_utils.CC_CLASS_METHOD_RE, line):
+        return True
+      if re.findall(test_filter_utils.CC_FLAG_CLASS_METHOD_RE, line):
+        return True
+      if re.findall(test_filter_utils.CC_PARAM_CLASS_RE, line):
+        return True
+      if re.findall(test_filter_utils.TYPE_CC_CLASS_RE, line):
+        return True
   return False
 
 
@@ -197,7 +197,7 @@ def get_parent_cls_name(file_name):
   Returns:
       A string of the parent class name or None
   """
-  with open(file_name) as data:
+  with open(file_name, encoding='utf-8') as data:
     for line in data:
       match = _PARENT_CLS_RE.match(line)
       if match:
@@ -820,7 +820,7 @@ def _get_vts_push_group_targets(push_file, rel_out_dir):
   targets = set()
   full_push_file_path = os.path.join(_VTS_PUSH_DIR, push_file)
   # pylint: disable=invalid-name
-  with open(full_push_file_path) as f:
+  with open(full_push_file_path, encoding='utf-8') as f:
     for line in f:
       target = line.strip()
       # Skip empty lines.
@@ -829,7 +829,7 @@ def _get_vts_push_group_targets(push_file, rel_out_dir):
 
       # This is a push file, get the targets from it.
       if target.endswith(_VTS_PUSH_SUFFIX):
-        targets |= _get_vts_push_group_targets(line.strip(), rel_out_dir)
+        targets |= _get_vts_push_group_targets(target, rel_out_dir)
         continue
       sanitized_target = target.split(_XML_PUSH_DELIM, 1)[0].strip()
       targets.add(os.path.join(rel_out_dir, sanitized_target))
@@ -1019,7 +1019,7 @@ def search_integration_dirs(name, int_dirs):
       Ask user to select if multiple tests are found.
       None if no matched test found.
   """
-  if type(int_dirs) == list:
+  if isinstance(int_dirs, list):
     int_dirs = tuple(int_dirs)
   return _search_integration_dirs(name, int_dirs)
 
@@ -1183,7 +1183,7 @@ def get_java_methods(test_path):
       A set of methods.
   """
   logging.debug('Probing %s:', test_path)
-  with open(test_path) as class_file:
+  with open(test_path, encoding='utf-8') as class_file:
     content = class_file.read()
   matches = re.findall(_JAVA_METHODS_RE, content)
   if matches:
@@ -1211,11 +1211,8 @@ def open_cc(filename: str):
       )
   else:
     logging.debug('Cannot find "gcc" and unable to trim comments.')
-  try:
-    cc_obj = open(target_cc, 'r')
+  with open(target_cc, 'r', encoding='utf-8') as cc_obj:
     yield cc_obj
-  finally:
-    cc_obj.close()
 
 
 # pylint: disable=too-many-branches
@@ -1244,7 +1241,7 @@ def get_cc_class_info(test_path):
       A dict of class info.
   """
   with open_cc(test_path) as class_file:
-    content = class_file.read()
+    content = ''.join(class_file.readlines())
     logging.debug('Parsing: %s', test_path)
     class_info, no_test_classes = test_filter_utils.get_cc_class_info(content)
 
@@ -1298,7 +1295,7 @@ def get_annotated_methods(annotation, file_path):
   """
   methods = set()
   annotation_name = '@' + str(annotation).split('.')[-1]
-  with open(file_path) as class_file:
+  with open(file_path, encoding='utf-8') as class_file:
     enter_annotation_block = False
     for line in class_file:
       if str(line).strip().startswith(annotation_name):
@@ -1353,7 +1350,7 @@ def _get_config_srcs_tuple_from_module_info(
   """Get test config and srcs from the given info of the module."""
   android_root_dir = os.environ.get(constants.ANDROID_BUILD_TOP)
   test_configs = mod_info.get(constants.MODULE_TEST_CONFIG, [])
-  if len(test_configs) == 0:
+  if not test_configs:
     # Check for AndroidTest.xml at the module path.
     for path in mod_info.get(constants.MODULE_PATH, []):
       config_path = os.path.join(
