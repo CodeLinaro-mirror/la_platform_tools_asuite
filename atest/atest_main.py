@@ -25,23 +25,22 @@ atest is designed to support any test types that can be ran by TradeFederation.
 # pylint: disable=too-many-lines
 
 from __future__ import annotations
-from __future__ import print_function
 
 import abc
 import argparse
-import collections
 import dataclasses
 import functools
 import itertools
 import logging
 import os
 import platform
+import shlex
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from typing import Any, Dict, List, Set
+from typing import Any
 
 from atest import arg_parser
 from atest import atest_configs
@@ -65,7 +64,6 @@ from atest.metrics import metrics_utils
 from atest.test_finders import test_finder_utils
 from atest.test_finders import test_info
 from atest.test_finders.smart_test_finder import smart_test_finder
-from atest.test_finders.test_info import TestInfo
 from atest.test_runner_invocation import TestRunnerInvocation
 from atest.tools import fetch_artifact
 from atest.tools import indexing
@@ -84,12 +82,7 @@ OPTION_NOT_FOR_TEST_MAPPING = (
 
 DEVICE_TESTS = 'tests that require device'
 HOST_TESTS = 'tests that do NOT require device'
-RESULT_HEADER_FMT = '\nResults from %(test_type)s:'
-RUN_HEADER_FMT = '\nRunning %(test_count)d %(test_type)s.'
-TEST_COUNT = 'test_count'
-TEST_TYPE = 'test_type'
 END_OF_OPTION = '--'
-HAS_IGNORED_ARGS = False
 # Conditions that atest should exit without sending result to metrics.
 EXIT_CODES_BEFORE_TEST = [
     ExitCode.ENV_NOT_SETUP,
@@ -106,6 +99,31 @@ _DRY_RUN_COMMAND_LOG_PREFIX = 'Internal run command from dry-run: '
 _SMART_TEST_SELECTION_FLAG = '--sts'
 
 
+class _StreamToLogger:
+  """A file like class to that redirect writes to a printer and logger."""
+
+  def __init__(self, logger, log_level, printer):
+    self._logger = logger
+    self._log_level = log_level
+    self._printer = printer
+    self._buffers = []
+
+  def write(self, buf: str) -> None:
+    self._printer.write(buf)
+    if not buf:
+      return
+    full_str = ''.join(self._buffers) + buf
+    self._buffers.clear()
+    lines = full_str.split('\n')
+    for line in lines[:-1]:
+      self._logger.log(self._log_level, line)
+    if lines[-1]:
+      self._buffers.append(lines[-1])
+
+  def flush(self) -> None:
+    self._printer.flush()
+
+
 @dataclasses.dataclass
 class Steps:
   """A dataclass that stores enabled steps."""
@@ -115,18 +133,18 @@ class Steps:
   test: bool
 
 
-def parse_steps(args: arg_parser.AtestArgParser) -> Steps:
+def parse_steps(args: argparse.Namespace) -> Steps:
   """Return Steps object.
 
   Args:
-      args: an AtestArgParser object.
+      args: an argparse.Namespace object.
 
   Returns:
       Step object that stores the boolean of build, install and test.
   """
   # Implicitly running 'build', 'install' and 'test' when args.steps is None.
   if not args.steps:
-    return Steps(True, True, True)
+    return Steps(build=True, install=True, test=True)
   build = constants.BUILD_STEP in args.steps
   test = constants.TEST_STEP in args.steps
   install = constants.INSTALL_STEP in args.steps
@@ -136,7 +154,7 @@ def parse_steps(args: arg_parser.AtestArgParser) -> Steps:
         'supported; Atest will proceed testing!'
     )
     test = True
-  return Steps(build, install, test)
+  return Steps(build=build, install=install, test=test)
 
 
 def _get_args_from_config():
@@ -146,56 +164,36 @@ def _get_args_from_config():
   config file for it without any effective options.
 
   Returns:
-      A list read from the config file.
+      A tuple of (list of args, bool if args were ignored).
   """
-  _config = atest_utils.get_config_folder().joinpath('config')
-  if not _config.parent.is_dir():
-    _config.parent.mkdir(parents=True)
+  config_path = atest_utils.get_config_folder().joinpath('config')
+  config_path.parent.mkdir(parents=True, exist_ok=True)
+  if not config_path.is_file():
+    config_path.write_text(constants.ATEST_EXAMPLE_ARGS, encoding='utf8')
+    return [], False
+
+  print(f'\n{atest_utils.mark_cyan("Reading config:")} {config_path}')
   args = []
-  if not _config.is_file():
-    with open(_config, 'w+', encoding='utf8') as cache:
-      cache.write(constants.ATEST_EXAMPLE_ARGS)
-    return args
-  warning = 'Line {} contains {} and will be ignored.'
-  print(
-      '\n{} {}'.format(
-          atest_utils.mark_cyan('Reading config:'),
-          _config,
-      )
-  )
-  # pylint: disable=global-statement:
-  global HAS_IGNORED_ARGS
-  with open(_config, 'r', encoding='utf8') as cache:
-    for entry in cache:
-      # Strip comments.
-      arg_in_line = entry.partition('#')[0].strip()
-      # Strip test name/path.
-      if arg_in_line.startswith('-'):
-        # Process argument that contains whitespaces.
-        # e.g. ["--serial foo"] -> ["--serial", "foo"]
-        if len(arg_in_line.split()) > 1:
-          # remove "--" to avoid messing up atest/tradefed commands.
-          if END_OF_OPTION in arg_in_line.split():
-            HAS_IGNORED_ARGS = True
-            print(
-                warning.format(
-                    atest_utils.mark_yellow(arg_in_line), END_OF_OPTION
-                )
-            )
-          args.extend(arg_in_line.split())
-        else:
-          if END_OF_OPTION == arg_in_line:
-            HAS_IGNORED_ARGS = True
-            print(
-                warning.format(
-                    atest_utils.mark_yellow(arg_in_line), END_OF_OPTION
-                )
-            )
-          args.append(arg_in_line)
-  return args
+  has_ignored_args = False
+  for entry in config_path.read_text(encoding='utf8').splitlines():
+    # Process argument that contains whitespaces and comments.
+    # e.g. ["--serial foo # comment"] -> ["--serial", "foo"]
+    split_arg_in_line = shlex.split(entry, comments=True)
+
+    # Strip test name/path.
+    if split_arg_in_line and split_arg_in_line[0].startswith('-'):
+      if END_OF_OPTION in split_arg_in_line:
+        has_ignored_args = True
+        print(
+            f'Line {atest_utils.mark_yellow(entry.strip())} contains '
+            f'{END_OF_OPTION} and will be ignored.'
+        )
+      else:
+        args.extend(split_arg_in_line)
+  return args, has_ignored_args
 
 
-def _parse_args(argv: List[str]) -> argparse.Namespace:
+def _parse_args(argv: list[str]) -> argparse.Namespace:
   """Parse command line arguments.
 
   Args:
@@ -205,59 +203,39 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
       A Namespace holding parsed args
   """
   # Store everything after '--' in custom_args.
-  pruned_argv = argv
-  custom_args_index = None
   if CUSTOM_ARG_FLAG in argv:
     custom_args_index = argv.index(CUSTOM_ARG_FLAG)
     pruned_argv = argv[:custom_args_index]
+    custom_args = argv[custom_args_index + 1 :]
+  else:
+    pruned_argv = argv
+    custom_args = []
   args = arg_parser.parse_args(pruned_argv)
-  if custom_args_index is not None:
-    for arg in argv[custom_args_index + 1 :]:
-      logging.debug('Quoting regex argument %s', arg)
-      args.custom_args.append(atest_utils.quote(arg))
+  for arg in custom_args:
+    logging.debug('Quoting regex argument %s', arg)
+    args.custom_args.append(atest_utils.quote(arg))
 
   return args
 
 
-def _configure_logging(verbose: bool, results_dir: str):
+def _configure_logging(results_dir: str):
   """Configure the logger.
 
   Args:
-      verbose: If true display DEBUG level logs on console.
       results_dir: A directory which stores the ATest execution information.
   """
   log_fmat = '%(asctime)s %(filename)s:%(lineno)s:%(levelname)s: %(message)s'
   date_fmt = '%Y-%m-%d %H:%M:%S'
   log_path = os.path.join(results_dir, 'atest.log')
 
-  logger = logging.getLogger('')
-  # Clear the handlers to prevent logging.basicConfig from being called twice.
-  logger.handlers = []
-
   logging.basicConfig(
-      filename=log_path, level=logging.DEBUG, format=log_fmat, datefmt=date_fmt
+      filename=log_path,
+      level=logging.DEBUG,
+      format=log_fmat,
+      datefmt=date_fmt,
+      force=True,
   )
-
-  class _StreamToLogger:
-    """A file like class to that redirect writes to a printer and logger."""
-
-    def __init__(self, logger, log_level, printer):
-      self._logger = logger
-      self._log_level = log_level
-      self._printer = printer
-      self._buffers = []
-
-    def write(self, buf: str) -> None:
-      self._printer.write(buf)
-
-      if len(buf) == 1 and buf[0] == '\n' and self._buffers:
-        self._logger.log(self._log_level, ''.join(self._buffers))
-        self._buffers.clear()
-      else:
-        self._buffers.append(buf)
-
-    def flush(self) -> None:
-      self._printer.flush()
+  logger = logging.getLogger('')
 
   stdout_log_level = 25
   stderr_log_level = 45
@@ -273,9 +251,7 @@ def _missing_environment_variables():
   Returns:
       List of strings of any missing environment variables.
   """
-  missing = list(
-      filter(None, [x for x in EXPECTED_VARS if not os.environ.get(x)])
-  )
+  missing = sorted(x for x in EXPECTED_VARS if not os.environ.get(x))
   if missing:
     atest_utils.print_and_log_error(
         "Local environment doesn't appear to have been "
@@ -292,17 +268,47 @@ def make_test_run_dir() -> str:
   Returns:
       A string of the dir path.
   """
-  if not os.path.exists(constants.ATEST_RESULT_ROOT):
-    os.makedirs(constants.ATEST_RESULT_ROOT)
+  os.makedirs(constants.ATEST_RESULT_ROOT, exist_ok=True)
   ctime = time.strftime(TEST_RUN_DIR_PREFIX, time.localtime())
   test_result_dir = tempfile.mkdtemp(
-      prefix='%s_' % ctime, dir=constants.ATEST_RESULT_ROOT
+      prefix=f'{ctime}_', dir=constants.ATEST_RESULT_ROOT
   )
   print(_RESULTS_DIR_PRINT_PREFIX + test_result_dir)
   return test_result_dir
 
 
-def get_extra_args(args) -> Dict[str, str]:
+_ARG_TO_CONST_MAP = {
+    'all_abi': constants.ALL_ABI,
+    'annotation_filter': constants.ANNOTATION_FILTER,
+    'collect_tests_only': constants.COLLECT_TESTS_ONLY,
+    'experimental_coverage': constants.COVERAGE,
+    'custom_args': constants.CUSTOM_ARGS,
+    'device_only': constants.DEVICE_ONLY,
+    'disable_teardown': constants.DISABLE_TEARDOWN,
+    'disable_upload_result': constants.DISABLE_UPLOAD_RESULT,
+    'dry_run': constants.DRY_RUN,
+    'host': constants.HOST,
+    'instant': constants.INSTANT,
+    'iterations': constants.ITERATIONS,
+    'request_upload_result': constants.REQUEST_UPLOAD_RESULT,
+    'rerun_until_failure': constants.RERUN_UNTIL_FAILURE,
+    'retry_any_failure': constants.RETRY_ANY_FAILURE,
+    'serial': constants.SERIAL,
+    'sharding': constants.SHARDING,
+    'test_filter': constants.TEST_FILTER,
+    'test_timeout': constants.TEST_TIMEOUT,
+    'tf_debug': constants.TF_DEBUG,
+    'tf_template': constants.TF_TEMPLATE,
+    'user_type': constants.USER_TYPE,
+    'verbose': constants.VERBOSE,
+    'wait_for_debugger': constants.WAIT_FOR_DEBUGGER,
+    'use_tf_min_base_template': constants.USE_TF_MIN_BASE_TEMPLATE,
+    'smart_test_selection': constants.SMART_TEST_SELECTION,
+    'class_level_report': constants.CLASS_LEVEL_REPORT,
+}
+
+
+def get_extra_args(args) -> dict[str, str]:
   """Get extra args for test runners.
 
   Args:
@@ -312,55 +318,26 @@ def get_extra_args(args) -> Dict[str, str]:
       Dict of extra args for test runners to utilize.
   """
   extra_args = {}
-  if args.wait_for_debugger:
-    extra_args[constants.WAIT_FOR_DEBUGGER] = None
   if not parse_steps(args).install:
     extra_args[constants.DISABLE_INSTALL] = None
   if args.test_build_target and (args.test_branch or args.test_build_id):
     extra_args[constants.SKIP_BUILDING_TEST] = True
-  # The key and its value of the dict can be called via:
-  # if args.aaaa:
-  #     extra_args[constants.AAAA] = args.aaaa
-  arg_maps = {
-      'all_abi': constants.ALL_ABI,
-      'annotation_filter': constants.ANNOTATION_FILTER,
-      'collect_tests_only': constants.COLLECT_TESTS_ONLY,
-      'experimental_coverage': constants.COVERAGE,
-      'custom_args': constants.CUSTOM_ARGS,
-      'device_only': constants.DEVICE_ONLY,
-      'disable_teardown': constants.DISABLE_TEARDOWN,
-      'disable_upload_result': constants.DISABLE_UPLOAD_RESULT,
-      'dry_run': constants.DRY_RUN,
-      'host': constants.HOST,
-      'instant': constants.INSTANT,
-      'iterations': constants.ITERATIONS,
-      'request_upload_result': constants.REQUEST_UPLOAD_RESULT,
-      'rerun_until_failure': constants.RERUN_UNTIL_FAILURE,
-      'retry_any_failure': constants.RETRY_ANY_FAILURE,
-      'serial': constants.SERIAL,
-      'sharding': constants.SHARDING,
-      'test_filter': constants.TEST_FILTER,
-      'test_timeout': constants.TEST_TIMEOUT,
-      'tf_debug': constants.TF_DEBUG,
-      'tf_template': constants.TF_TEMPLATE,
-      'user_type': constants.USER_TYPE,
-      'verbose': constants.VERBOSE,
-      'use_tf_min_base_template': constants.USE_TF_MIN_BASE_TEMPLATE,
-      'smart_test_selection': constants.SMART_TEST_SELECTION,
-      'class_level_report': constants.CLASS_LEVEL_REPORT,
-  }
-  not_match = [k for k in arg_maps if k not in vars(args)]
-  if not_match:
+  missing_args = set(_ARG_TO_CONST_MAP).difference(vars(args))
+  if missing_args:
     raise AttributeError(
-        '%s object has no attribute %s' % (type(args).__name__, not_match)
+        f'{type(args).__name__} object has no attribute {sorted(missing_args)}'
     )
   extra_args.update({
-      arg_maps.get(k): v for k, v in vars(args).items() if arg_maps.get(k) and v
+      const_name: arg_value
+      for arg_name, const_name in _ARG_TO_CONST_MAP.items()
+      if (arg_value := getattr(args, arg_name, None))
   })
   return extra_args
 
 
-def _validate_exec_mode(args, test_infos: list[TestInfo], host_tests=None):
+def _validate_exec_mode(
+    args, test_infos: list[test_info.TestInfo], host_tests=None
+):
   """Validate all test execution modes are not in conflict.
 
   Exit the program with INVALID_EXEC_MODE code if the desired is a host-side
@@ -382,25 +359,25 @@ def _validate_exec_mode(args, test_infos: list[TestInfo], host_tests=None):
   host_only_test_detected = constants.DEVICELESS_TEST in all_device_modes
   # In the case of '$atest <device-only> --host', exit.
   if (host_tests or args.host) and device_only_test_detected:
-    device_only_tests = [
+    device_only_tests = sorted(
         x.test_name
         for x in test_infos
         if x.get_supported_exec_mode() == constants.DEVICE_TEST
-    ]
+    )
     err_msg = (
         'Specified --host, but the following tests are device-only:\n  '
-        + '\n  '.join(sorted(device_only_tests))
-        + '\nPlease remove the  option when running device-only tests.'
+        f'{"\n  ".join(device_only_tests)}\n'
+        'Please remove the --host option when running device-only tests.'
     )
   # In the case of '$atest <host-only> <device-only> --host' or
   # '$atest <host-only> <device-only>', exit.
-  if (
+  elif (
       host_only_test_detected
       and device_only_test_detected
       and not args.smart_test_selection
   ):
     err_msg = 'There are host-only and device-only tests in command.'
-  if host_tests is False and host_only_test_detected:
+  elif host_tests is False and host_only_test_detected:
     err_msg = 'There are host-only tests in command.'
   if err_msg:
     atest_utils.print_and_log_error(err_msg)
@@ -420,11 +397,12 @@ def _validate_exec_mode(args, test_infos: list[TestInfo], host_tests=None):
 def _validate_adb_devices(args, test_infos):
   """Validate the availability of connected devices via adb command.
 
-  Exit the program with error code if have device-only and host-only.
+  Exit the program with error code if device tests are requested but no device
+  is found.
 
   Args:
       args: parsed args object.
-      test_infos: TestInfo object.
+      test_infos: A list of TestInfo objects.
   """
   # No need to check device availability if the user does not acquire to test.
   if not parse_steps(args).test:
@@ -432,17 +410,17 @@ def _validate_adb_devices(args, test_infos):
   if args.no_checking_device:
     return
   all_device_modes = {x.get_supported_exec_mode() for x in test_infos}
-  device_tests = [
-      x.test_name
-      for x in test_infos
-      if x.get_supported_exec_mode() != constants.DEVICELESS_TEST
-  ]
   # Only block testing if it is a device test.
   if constants.DEVICE_TEST in all_device_modes:
     if (
         not any((args.host, args.start_avd, args.acloud_create))
         and not atest_utils.get_adb_devices()
     ):
+      device_tests = [
+          x.test_name
+          for x in test_infos
+          if x.get_supported_exec_mode() != constants.DEVICELESS_TEST
+      ]
       err_msg = (
           f'Stop running test(s): {", ".join(device_tests)} require a device.'
       )
@@ -454,8 +432,8 @@ def _validate_adb_devices(args, test_infos):
 
 def _validate_tm_tests_exec_mode(
     args: argparse.Namespace,
-    device_test_infos: List[test_info.TestInfo],
-    host_test_infos: List[test_info.TestInfo],
+    device_test_infos: list[test_info.TestInfo],
+    host_test_infos: list[test_info.TestInfo],
 ):
   """Validate all test execution modes are not in conflict.
 
@@ -490,10 +468,9 @@ def _has_valid_test_mapping_args(args):
       True if args are valid
   """
   is_test_mapping = atest_utils.is_test_mapping(args)
-  if is_test_mapping:
-    metrics.LocalDetectEvent(detect_type=DetectType.IS_TEST_MAPPING, result=1)
-  else:
-    metrics.LocalDetectEvent(detect_type=DetectType.IS_TEST_MAPPING, result=0)
+  metrics.LocalDetectEvent(
+      detect_type=DetectType.IS_TEST_MAPPING, result=int(is_test_mapping)
+  )
   if not is_test_mapping:
     return True
   options_to_validate = [
@@ -502,33 +479,13 @@ def _has_valid_test_mapping_args(args):
   for arg_value, arg in options_to_validate:
     if arg_value:
       atest_utils.print_and_log_error(
-          atest_utils.mark_red(OPTION_NOT_FOR_TEST_MAPPING.format(arg))
+          atest_utils.mark_red(
+              f'Option "{arg}" does not work for running tests in TEST_MAPPING'
+              ' files'
+          )
       )
       return False
   return True
-
-
-def _print_deprecation_warning(arg_to_deprecate: str):
-  """For features that are up for deprecation in the near future, print a message
-
-  to alert the user about the upcoming deprecation.
-
-  Args:
-      arg_to_deprecate: the arg with which the to-be-deprecated feature is
-        called.
-  """
-  args_to_deprecation_info = {
-      # arg_to_deprecate : (deprecation timeframe, additional info for users)
-      '--info': ('is deprecated.', '\nUse CodeSearch or `gomod` instead.')
-  }
-
-  warning_message = (
-      f'\nWARNING: The `{arg_to_deprecate}` feature '
-      + ' '.join(args_to_deprecation_info[arg_to_deprecate])
-      + '\nPlease file a bug or feature request to the Atest team if you have'
-      ' any concerns.'
-  )
-  atest_utils.colorful_print(warning_message, constants.RED)
 
 
 def is_from_test_mapping(test_infos):
@@ -540,7 +497,7 @@ def is_from_test_mapping(test_infos):
   Returns:
       True if the test infos are from TEST_MAPPING files.
   """
-  return list(test_infos)[0].from_test_mapping
+  return next(iter(test_infos)).from_test_mapping
 
 
 def _split_test_mapping_tests(test_infos):
@@ -556,8 +513,13 @@ def _split_test_mapping_tests(test_infos):
           device.
   """
   assert is_from_test_mapping(test_infos)
-  host_test_infos = {info for info in test_infos if info.host}
-  device_test_infos = {info for info in test_infos if not info.host}
+  host_test_infos = set()
+  device_test_infos = set()
+  for info in test_infos:
+    if info.host:
+      host_test_infos.add(info)
+    else:
+      device_test_infos.add(info)
   return device_test_infos, host_test_infos
 
 
@@ -570,15 +532,15 @@ def _exclude_modules_in_targets(build_targets):
   Returns:
       A set of build targets that excludes MODULES-IN-*.
   """
-  shrank_build_targets = build_targets.copy()
   logging.debug(
       'Will exclude all "%s*" from the build targets.', constants.MODULES_IN
   )
-  for target in build_targets:
-    if target.startswith(constants.MODULES_IN):
-      logging.debug('Ignore %s.', target)
-      shrank_build_targets.remove(target)
-  return shrank_build_targets
+  modules_to_exclude = {
+      t for t in build_targets if t.startswith(constants.MODULES_IN)
+  }
+  for target in modules_to_exclude:
+    logging.debug('Ignore %s.', target)
+  return build_targets - modules_to_exclude
 
 
 def get_device_count_config(test_infos, mod_info):
@@ -602,21 +564,19 @@ def get_device_count_config(test_infos, mod_info):
 
 
 def has_set_sufficient_devices(
-    required_amount: int, serial: List[str] = None
+    required_amount: int, serial: list[str] = None
 ) -> bool:
   """Detect whether sufficient device serial is set for test."""
-  given_amount = len(serial) if serial else 0
-  # Only check when both given_amount and required_amount are non zero.
-  if all((given_amount, required_amount)):
-    # Base on TF rules, given_amount can be greater than or equal to
-    # required_amount.
-    if required_amount > given_amount:
-      atest_utils.colorful_print(
-          f'The test requires {required_amount} devices, '
-          f'but {given_amount} were given.',
-          constants.RED,
-      )
-      return False
+  if not serial or required_amount <= 0:
+    return True
+
+  if len(serial) < required_amount:
+    atest_utils.colorful_print(
+        f'The test requires {required_amount} devices, '
+        f'but {len(serial)} were given.',
+        constants.RED,
+    )
+    return False
   return True
 
 
@@ -671,29 +631,30 @@ class _AtestMain:
   def run(self):
     self._results_dir = make_test_run_dir()
 
+    config_args, has_ignored_args = _get_args_from_config()
     if END_OF_OPTION in self._argv:
       end_position = self._argv.index(END_OF_OPTION)
       final_args = [
           *self._argv[1:end_position],
-          *_get_args_from_config(),
+          *config_args,
           *self._argv[end_position:],
       ]
     else:
-      final_args = [*self._argv[1:], *_get_args_from_config()]
-    if final_args != self._argv[1:]:
+      final_args = [*self._argv[1:], *config_args]
+    has_config_args = final_args != self._argv[1:]
+    metrics.LocalDetectEvent(
+        detect_type=DetectType.ATEST_CONFIG, result=int(has_config_args)
+    )
+    if has_config_args:
       print(
-          'The actual cmd will be: \n\t{}\n'.format(
-              atest_utils.mark_cyan('atest ' + ' '.join(final_args))
-          )
+          'The actual cmd will be:'
+          f' \n\t{atest_utils.mark_cyan("atest " + " ".join(final_args))}\n'
       )
-      metrics.LocalDetectEvent(detect_type=DetectType.ATEST_CONFIG, result=1)
-      if HAS_IGNORED_ARGS:
+      if has_ignored_args:
         atest_utils.colorful_print(
             'Please correct the config and try again.', constants.YELLOW
         )
         sys.exit(ExitCode.EXIT_BEFORE_MAIN)
-    else:
-      metrics.LocalDetectEvent(detect_type=DetectType.ATEST_CONFIG, result=0)
 
     if _SMART_TEST_SELECTION_FLAG in final_args:
       if CUSTOM_ARG_FLAG not in final_args:
@@ -702,7 +663,7 @@ class _AtestMain:
 
     self._args = _parse_args(final_args)
     atest_configs.GLOBAL_ARGS = self._args
-    _configure_logging(self._args.verbose, self._results_dir)
+    _configure_logging(self._results_dir)
 
     logging.debug(
         'Start of atest run. sys.argv: %s, final_args: %s',
@@ -749,40 +710,17 @@ class _AtestMain:
 
     sys.exit(exit_code)
 
-  def _check_no_action_argument(self) -> int:
-    """Method for non-action arguments such as --version, --history, --latest_result, etc.
-
-    Returns:
-        Exit code if no action. None otherwise.
-    """
-    if self._args.version:
-      print(atest_utils.get_atest_version())
-      return ExitCode.SUCCESS
-    if self._args.history:
-      atest_execution_info.print_test_result(
-          constants.ATEST_RESULT_ROOT, self._args.history
-      )
-      return ExitCode.SUCCESS
-    if self._args.latest_result:
-      atest_execution_info.print_test_result_by_path(
-          constants.LATEST_RESULT_FILE
-      )
-      return ExitCode.SUCCESS
-    return None
-
   def _check_envs_and_args(self) -> int:
     """Validate environment variables and args.
 
     Returns:
         Exit code if any setup or arg is invalid. None otherwise.
     """
-    if (
-        not os.getenv(constants.ANDROID_BUILD_TOP, ' ') in os.getcwd()
-    ):  # Not under android root.
+    android_build_top = os.getenv(constants.ANDROID_BUILD_TOP)
+    if not android_build_top or android_build_top not in os.getcwd():
+      # Not under android root.
       atest_utils.colorful_print(
-          '\nAtest must always work under ${}!'.format(
-              constants.ANDROID_BUILD_TOP
-          ),
+          f'\nAtest must always work under ${constants.ANDROID_BUILD_TOP}!',
           constants.RED,
       )
       return ExitCode.OUTSIDE_ROOT
@@ -799,30 +737,34 @@ class _AtestMain:
             constants.RED,
         )
         return ExitCode.INPUT_TEST_REFERENCE_ERROR
-      if subprocess.run(['git', 'branch'], capture_output=True).returncode != 0:
+      if (
+          subprocess.run(
+              ['git', 'rev-parse', '--is-inside-work-tree'],
+              stdout=subprocess.DEVNULL,
+              stderr=subprocess.DEVNULL,
+          ).returncode
+          != 0
+      ):
         atest_utils.colorful_print(
             'Smart test selection must work under a repo',
             constants.RED,
         )
         return ExitCode.OUTSIDE_REPO
 
-    if (
-        self._args.test_build_target
-        or self._args.test_branch
-        or self._args.test_build_id
-    ):
-      if not self._args.test_build_target or not (
-          self._args.test_branch or self._args.test_build_id
-      ):
-        atest_utils.colorful_print(
-            'Cross branch testing is enabled. --test_build_target and one of'
-            ' either --test_branch or --test_build_id are required.',
-            constants.RED,
-        )
-        return ExitCode.INVALID_CROSS_BRANCH_ARGS
+    is_test_build_target_present = bool(self._args.test_build_target)
+    is_test_branch_or_build_id_present = bool(
+        self._args.test_branch or self._args.test_build_id
+    )
+    if is_test_build_target_present != is_test_branch_or_build_id_present:
+      atest_utils.colorful_print(
+          'Cross branch testing is enabled. --test_build_target and one of'
+          ' either --test_branch or --test_build_id are required.',
+          constants.RED,
+      )
+      return ExitCode.INVALID_CROSS_BRANCH_ARGS
 
     # Checks whether ANDROID_SERIAL environment variable is set to an empty string.
-    if 'ANDROID_SERIAL' in os.environ and not os.environ['ANDROID_SERIAL']:
+    if os.environ.get('ANDROID_SERIAL') == '':
       atest_utils.print_and_log_warning(
           'Empty device serial detected in the ANDROID_SERIAL environment'
           ' variable. This may causes unexpected behavior in TradeFed. If not'
@@ -923,15 +865,11 @@ class _AtestMain:
     Returns:
         A set of dependencies for the device update method.
     """
-    if not self._args.update_device:
-      return set()
-
-    if (
+    if not self._args.update_device or (
         self._test_execution_plan
         and not self._test_execution_plan.requires_device_update()
     ):
       return set()
-
     return self._get_device_update_method().dependencies()
 
   def _need_rebuild_module_info(self) -> bool:
@@ -965,10 +903,10 @@ class _AtestMain:
     if self._args.rebuild_module_info:
       return True
     logging.debug('Examinating the consistency of build files...')
-    if not atest_utils.build_files_integrity_is_ok():
+    build_files_changed = not atest_utils.build_files_integrity_is_ok()
+    if build_files_changed:
       logging.debug('Found build files were changed.')
-      return True
-    return False
+    return build_files_changed
 
   def _load_module_info(self):
     self._is_out_clean_before_module_info_build = not os.path.exists(
@@ -1052,15 +990,11 @@ class _AtestMain:
         self._args.list_modules
     )
     print(
-        '\n%s'
-        % atest_utils.mark_cyan(
-            '%s Testable %s modules'
-            % (len(testable_modules), self._args.list_modules)
-        )
+        f'\n{atest_utils.mark_cyan(f"{len(testable_modules)} Testable {self._args.list_modules} modules")}'
     )
     print(atest_utils.delimiter('-'))
     for module in sorted(testable_modules):
-      print('\t%s' % module)
+      print(f'\t{module}')
 
     return ExitCode.SUCCESS
 
@@ -1075,26 +1009,21 @@ class _AtestMain:
       return error_code
 
     print(
-        'Would build the following targets: %s'
-        % (atest_utils.mark_green('%s' % self._get_build_targets()))
+        'Would build the following targets: '
+        f'{atest_utils.mark_green(str(self._get_build_targets()))}'
     )
 
     if self._args.test_build_target:
+      artifacts_info = {
+          'build_target': self._args.test_build_target,
+          'branch': self._args.test_branch,
+          'build_id': self._args.test_build_id or 'latest',
+      }
       print(
-          'Would download test artifacts from: %s'
-          % (
-              atest_utils.mark_green(
-                  '%s'
-                  % ({
-                      'build_target': self._args.test_build_target,
-                      'branch': self._args.test_branch,
-                      'build_id': self._args.test_build_id or 'latest',
-                  })
-              )
-          )
+          'Would download test artifacts from: '
+          f'{atest_utils.mark_green(str(artifacts_info))}'
       )
 
-    all_run_cmds = []
     for test_runner, tests in test_runner_handler.group_tests_by_test_runners(
         self._test_infos
     ):
@@ -1107,11 +1036,8 @@ class _AtestMain:
           tests, self._test_execution_plan.extra_args
       )
       for run_cmd in run_cmds:
-        all_run_cmds.append(run_cmd)
         logging.debug(_DRY_RUN_COMMAND_LOG_PREFIX + run_cmd)
-        print(
-            'Would run test via command: %s' % (atest_utils.mark_green(run_cmd))
-        )
+        print(f'Would run test via command: {atest_utils.mark_green(run_cmd)}')
 
     return ExitCode.SUCCESS
 
@@ -1286,6 +1212,34 @@ class _AtestMain:
         hostname=platform.node(),
     )
 
+  def _handle_special_commands(self) -> int | None:
+    """Method for special commands such as --version, --history, --list-modules, etc.
+
+    Returns:
+        Exit code if a special command was handled. None otherwise.
+    """
+    if self._args.version:
+      print(atest_utils.get_atest_version())
+      return ExitCode.SUCCESS
+    if self._args.history:
+      atest_execution_info.print_test_result(
+          constants.ATEST_RESULT_ROOT, self._args.history
+      )
+      return ExitCode.SUCCESS
+    if self._args.latest_result:
+      atest_execution_info.print_test_result_by_path(
+          constants.LATEST_RESULT_FILE
+      )
+      return ExitCode.SUCCESS
+
+    if self._args.list_modules:
+      return self._handle_list_modules()
+
+    if self._args.dry_run:
+      return self._handle_dry_run()
+
+    return None
+
   def _run_all_steps(self) -> int:
     """Executes the atest script.
 
@@ -1298,19 +1252,13 @@ class _AtestMain:
 
     invalid_arg_exit_code = self._check_envs_and_args()
     if invalid_arg_exit_code is not None:
-      sys.exit(invalid_arg_exit_code)
+      return invalid_arg_exit_code
 
     self._send_start_event()
 
-    no_action_exit_code = self._check_no_action_argument()
-    if no_action_exit_code is not None:
-      sys.exit(no_action_exit_code)
-
-    if self._args.list_modules:
-      return self._handle_list_modules()
-
-    if self._args.dry_run:
-      return self._handle_dry_run()
+    exit_code = self._handle_special_commands()
+    if exit_code is not None:
+      return exit_code
 
     self._start_acloud_if_requested()
 
@@ -1341,7 +1289,7 @@ class _TestExecutionPlan(abc.ABC):
   @staticmethod
   def create(
       args: argparse.Namespace,
-      test_infos: List[test_info.TestInfo],
+      test_infos: list[test_info.TestInfo],
       results_dir: str,
       mod_info: module_info.ModuleInfo,
   ) -> _TestExecutionPlan:
@@ -1375,15 +1323,15 @@ class _TestExecutionPlan(abc.ABC):
   def __init__(
       self,
       args: argparse.Namespace,
-      extra_args: Dict[str, Any],
-      test_infos: List[test_info.TestInfo],
+      extra_args: dict[str, Any],
+      test_infos: list[test_info.TestInfo],
   ):
     self._args = args
     self._extra_args = extra_args
     self._test_infos = test_infos
 
   @property
-  def extra_args(self) -> Dict[str, Any]:
+  def extra_args(self) -> dict[str, Any]:
     return self._extra_args
 
   @abc.abstractmethod
@@ -1391,7 +1339,7 @@ class _TestExecutionPlan(abc.ABC):
     """Executes all test runner invocations in this plan."""
 
   @abc.abstractmethod
-  def required_build_targets(self) -> Set[str]:
+  def required_build_targets(self) -> set[str]:
     """Returns the list of build targets required by this plan."""
 
   @abc.abstractmethod
@@ -1405,9 +1353,9 @@ class _TestMappingExecutionPlan(_TestExecutionPlan):
   def __init__(
       self,
       args: argparse.Namespace,
-      extra_args: Dict[str, Any],
-      test_infos: List[test_info.TestInfo],
-      test_type_to_invocations: Dict[str, List[TestRunnerInvocation]],
+      extra_args: dict[str, Any],
+      test_infos: list[test_info.TestInfo],
+      test_type_to_invocations: dict[str, list[TestRunnerInvocation]],
   ):
     super().__init__(args, extra_args, test_infos)
     self._test_type_to_invocations = test_type_to_invocations
@@ -1415,7 +1363,7 @@ class _TestMappingExecutionPlan(_TestExecutionPlan):
   @staticmethod
   def create(
       args: argparse.Namespace,
-      test_infos: List[test_info.TestInfo],
+      test_infos: list[test_info.TestInfo],
       results_dir: str,
       mod_info: module_info.ModuleInfo,
   ) -> _TestMappingExecutionPlan:
@@ -1460,7 +1408,7 @@ class _TestMappingExecutionPlan(_TestExecutionPlan):
           minimal_build=args.minimal_build,
       )
 
-    test_type_to_invocations = collections.OrderedDict()
+    test_type_to_invocations = {}
     if extra_args.get(constants.DEVICE_ONLY):
       atest_utils.colorful_print(
           'Option `--device-only` specified. Skip running deviceless tests.',
@@ -1499,7 +1447,7 @@ class _TestMappingExecutionPlan(_TestExecutionPlan):
         )
     )
 
-  def required_build_targets(self) -> Set[str]:
+  def required_build_targets(self) -> set[str]:
     build_targets = set()
     for invocation in itertools.chain.from_iterable(
         self._test_type_to_invocations.values()
@@ -1522,9 +1470,9 @@ class _TestMappingExecutionPlan(_TestExecutionPlan):
       )
       if not tests:
         continue
-      header = RUN_HEADER_FMT % {TEST_COUNT: len(tests), TEST_TYPE: test_type}
+      header = f'\nRunning {len(tests)} {test_type}.'
       atest_utils.colorful_print(header, constants.MAGENTA)
-      logging.debug('\n'.join([str(info) for info in tests]))
+      logging.debug('\n'.join(str(info) for info in tests))
 
       reporter = result_reporter.ResultReporter(
           collect_only=self._extra_args.get(constants.COLLECT_TESTS_ONLY),
@@ -1545,7 +1493,7 @@ class _TestMappingExecutionPlan(_TestExecutionPlan):
     failed_tests = []
     for tests_exit_code, reporter, test_type in test_results:
       atest_utils.colorful_print(
-          RESULT_HEADER_FMT % {TEST_TYPE: test_type}, constants.MAGENTA
+          f'\nResults from {test_type}:', constants.MAGENTA
       )
       result = tests_exit_code | reporter.print_summary()
       if result:
@@ -1570,9 +1518,9 @@ class _TestModuleExecutionPlan(_TestExecutionPlan):
   def __init__(
       self,
       args: argparse.Namespace,
-      extra_args: Dict[str, Any],
-      test_infos: List[test_info.TestInfo],
-      test_runner_invocations: List[TestRunnerInvocation],
+      extra_args: dict[str, Any],
+      test_infos: list[test_info.TestInfo],
+      test_runner_invocations: list[TestRunnerInvocation],
   ):
     super().__init__(args, extra_args, test_infos)
     self._test_runner_invocations = test_runner_invocations
@@ -1580,7 +1528,7 @@ class _TestModuleExecutionPlan(_TestExecutionPlan):
   @staticmethod
   def create(
       args: argparse.Namespace,
-      test_infos: List[test_info.TestInfo],
+      test_infos: list[test_info.TestInfo],
       results_dir: str,
       mod_info: module_info.ModuleInfo,
   ) -> _TestModuleExecutionPlan:
@@ -1624,7 +1572,7 @@ class _TestModuleExecutionPlan(_TestExecutionPlan):
         inv.requires_device_update() for inv in self._test_runner_invocations
     )
 
-  def required_build_targets(self) -> Set[str]:
+  def required_build_targets(self) -> set[str]:
     build_targets = set()
     for test_runner_invocation in self._test_runner_invocations:
       build_targets |= test_runner_invocation.get_test_runner_reqs()
@@ -1633,23 +1581,17 @@ class _TestModuleExecutionPlan(_TestExecutionPlan):
 
   def execute(self) -> ExitCode:
 
+    reporter_kwargs = {
+        'collect_only': self.extra_args.get(constants.COLLECT_TESTS_ONLY),
+        'wait_for_debugger': atest_configs.GLOBAL_ARGS.wait_for_debugger,
+        'args': self._args,
+        'test_infos': self._test_infos,
+        'class_level_report': self._args.class_level_report,
+    }
     if self._args.smart_test_selection:
-      reporter = result_reporter.ResultReporter(
-          collect_only=self.extra_args.get(constants.COLLECT_TESTS_ONLY),
-          wait_for_debugger=atest_configs.GLOBAL_ARGS.wait_for_debugger,
-          args=self._args,
-          test_infos=self._test_infos,
-          class_level_report=True,
-          runner_errors_as_warnings=True,
-      )
-    else:
-      reporter = result_reporter.ResultReporter(
-          collect_only=self.extra_args.get(constants.COLLECT_TESTS_ONLY),
-          wait_for_debugger=atest_configs.GLOBAL_ARGS.wait_for_debugger,
-          args=self._args,
-          test_infos=self._test_infos,
-          class_level_report=self._args.class_level_report,
-      )
+      reporter_kwargs['class_level_report'] = True
+      reporter_kwargs['runner_errors_as_warnings'] = True
+    reporter = result_reporter.ResultReporter(**reporter_kwargs)
     reporter.print_starting_text()
 
     exit_code = ExitCode.SUCCESS
