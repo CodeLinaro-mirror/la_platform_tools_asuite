@@ -39,6 +39,7 @@ from atest import module_info
 from atest import module_info_unittest_base
 from atest import unittest_constants as uc
 from atest import unittest_utils
+from atest.acme import acme_utils
 from atest.test_finders import test_finder_utils
 from atest.test_finders import test_info
 from atest.test_runner_invocation import TestRunnerInvocation
@@ -51,7 +52,7 @@ from pyfakefs import fake_filesystem_unittest
 # TODO(147567606): Replace {serial} with {extra_args} for general extra
 # arguments testing.
 RUN_CMD_ARGS = (
-    '--log-level-display VERBOSE --log-level VERBOSE'
+    '--log-level-display VERBOSE --log-level VERBOSE --remove-module-buffering'
     '{device_early_release}{serial}'
 )
 LOG_ARGS = atf_tr.AtestTradefedTestRunner._LOG_ARGS.format(
@@ -71,6 +72,7 @@ RUN_CMD = atf_tr.AtestTradefedTestRunner._RUN_CMD.format(
     tf_customize_template='{tf_customize_template}',
     args=RUN_CMD_ARGS,
     log_args=LOG_ARGS,
+    test='{test}',
 )
 FULL_CLASS2_NAME = 'android.jank.cts.ui.SomeOtherClass'
 CLASS2_FILTER = test_info.TestFilter(FULL_CLASS2_NAME, frozenset())
@@ -436,6 +438,74 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
     mock_conn1.assert_has_calls([mock.call.close()])
     mock_conn2.assert_has_calls([mock.call.close()])
 
+  @mock.patch.object(atest_utils, 'colorful_print')
+  @mock.patch.object(atf_tr.AtestTradefedTestRunner, '_process_connection')
+  @mock.patch('select.select')
+  def test_start_monitor_user_type_error_logic(
+      self, mock_select, mock_process, mock_print
+  ):
+    """Test _start_monitor method misleading error logic."""
+    mock_server = mock.Mock()
+    mock_subproc = mock.Mock()
+    mock_reporter = mock.Mock()
+    mock_reporter.all_test_results = []
+    mock_conn = mock.Mock()
+
+    # Set user_type to trigger the logic
+    self._global_args.user_type = (
+        'concurrent_foreground_and_visible_background_user'
+    )
+
+    # Scenario 1: Module started. Should NOT show "user type doesn't support"
+    mock_server.accept.side_effect = [(mock_conn, 'addr')]
+    mock_select.side_effect = [
+        ([mock_server], [], []),  # Accept connection
+        ([mock_conn], [], []),  # Read data
+    ]
+    mock_process.side_effect = [False]  # Close connection
+    mock_subproc.poll.side_effect = [None, True]  # End loop
+
+    with mock.patch(
+        'atest.test_runners.atest_tf_test_runner.EventHandler'
+    ) as mock_handler_cls:
+      mock_handler = mock.Mock()
+      mock_handler_cls.return_value = mock_handler
+      mock_handler.state = {'current_group': 'some_module'}
+      mock_handler.log_associations = []
+
+      self.tr._start_monitor(mock_server, mock_subproc, mock_reporter, {})
+
+    # Check that the "doesn't support" message was NOT printed
+    for call in mock_print.call_args_list:
+      self.assertNotIn("doesn't support", call[0][0])
+
+    # Scenario 2: Module NOT started. SHOULD show "user type doesn't support"
+    mock_print.reset_mock()
+    mock_server.accept.side_effect = [(mock_conn, 'addr')]
+    mock_select.side_effect = [
+        ([mock_server], [], []),
+        ([mock_conn], [], []),
+    ]
+    mock_process.side_effect = [False]
+    mock_subproc.poll.side_effect = [None, True]
+
+    with mock.patch(
+        'atest.test_runners.atest_tf_test_runner.EventHandler'
+    ) as mock_handler_cls:
+      mock_handler = mock.Mock()
+      mock_handler_cls.return_value = mock_handler
+      mock_handler.state = {}  # No current_group
+      mock_handler.log_associations = []
+
+      self.tr._start_monitor(mock_server, mock_subproc, mock_reporter, {})
+
+    # Check that the "doesn't support" message WAS printed
+    msg_printed = any(
+        "The test module doesn't support" in str(call[0][0])
+        for call in mock_print.call_args_list
+    )
+    self.assertTrue(msg_printed)
+
   def test_start_socket_server(self):
     """Test start_socket_server method."""
     server = self.tr._start_socket_server()
@@ -557,6 +627,7 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
                 template=self.tr._TF_DEVICE_TEST_TEMPLATE,
                 tf_customize_template='',
                 device_early_release=' --no-early-device-release',
+                test=atf_tr.ATEST_XML,
             )
         ],
     )
@@ -569,6 +640,7 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
                 template=self.tr._TF_DEVICE_TEST_TEMPLATE,
                 tf_customize_template='',
                 device_early_release=' --no-early-device-release',
+                test=atf_tr.ATEST_XML,
             )
         ],
     )
@@ -641,6 +713,7 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
                 template=self.tr._TF_DEVICE_TEST_TEMPLATE,
                 tf_customize_template='',
                 device_early_release=' --no-early-device-release',
+                test=atf_tr.ATEST_XML,
             )
         ],
     )
@@ -658,6 +731,7 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
                 template=self.tr._TF_DEVICE_TEST_TEMPLATE,
                 tf_customize_template='',
                 device_early_release=' --no-early-device-release',
+                test=atf_tr.ATEST_XML,
             )
         ],
     )
@@ -671,10 +745,35 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
                 template=self.tr._TF_DEVICELESS_TEST_TEMPLATE,
                 tf_customize_template='',
                 device_early_release=' --no-early-device-release',
+                test=atf_tr.ATEST_XML,
             )
             + ' -n --prioritize-host-config --skip-host-arch-check'
         ],
     )
+
+  @mock.patch.object(atf_tr.AtestTradefedTestRunner, '_parse_extra_args')
+  @mock.patch.object(
+      acme_utils,
+      'create_atest_execution_plan_suite_runner_test_args',
+  )
+  def test_generate_run_commands_with_execution_plans(
+      self, mock_create_exec_plan_args, mock_parse
+  ):
+    """Test generate_run_commands with execution plans."""
+    mock_parse.return_value = [], []
+    self._global_args.group_test = False
+    test_infos = [
+        test_info.TestInfo(
+            uc.MODULE_NAME,
+            atf_tr.AtestTradefedTestRunner.NAME,
+            set(),
+            data={'execution_plans': ['plan-a']},
+        )
+    ]
+
+    self.tr.generate_run_commands(test_infos, {})
+
+    mock_create_exec_plan_args.assert_called_once_with(test_infos)
 
   def test_flatten_test_filters(self):
     """Test flatten_test_filters method."""
@@ -796,8 +895,8 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
     )
 
   @mock.patch.object(test_finder_utils, 'get_test_config_and_srcs')
-  def test_create_test_args(self, mock_config):
-    """Test _create_test_args method."""
+  def test_create_test_args_skip_loading_config_jar(self, mock_config):
+    """Test _create_test_args setting --skip-loading-config-jar."""
     # Only compile '--skip-loading-config-jar' in TF if it's not
     # INTEGRATION finder or the finder property isn't set.
     mock_config.return_value = '', ''
@@ -859,6 +958,7 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
                 template=self.tr._TF_DEVICE_TEST_TEMPLATE,
                 tf_customize_template='',
                 device_early_release=' --no-early-device-release',
+                test=atf_tr.ATEST_XML,
             )
         ],
     )
@@ -874,6 +974,7 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
                 template=self.tr._TF_DEVICE_TEST_TEMPLATE,
                 tf_customize_template='',
                 device_early_release=' --no-early-device-release',
+                test=atf_tr.ATEST_XML,
             )
         ],
     )
@@ -903,6 +1004,7 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
                 template=self.tr._TF_DEVICE_TEST_TEMPLATE,
                 tf_customize_template='',
                 device_early_release=' --no-early-device-release',
+                test=atf_tr.ATEST_XML,
             )
         ],
     )
@@ -938,6 +1040,7 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
                 template=self.tr._TF_DEVICE_TEST_TEMPLATE,
                 device_early_release=' --no-early-device-release',
                 tf_customize_template='--template:map {}={}',
+                test=atf_tr.ATEST_XML,
             ).format(tf_tmplate_key1, tf_tmplate_val1)
         ],
     )
@@ -959,6 +1062,7 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
                 tf_customize_template=(
                     '--template:map {}={} --template:map {}={}'
                 ),
+                test=atf_tr.ATEST_XML,
             ).format(
                 tf_tmplate_key1,
                 tf_tmplate_val1,
@@ -1028,6 +1132,7 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
                 tf_customize_template='',
                 device_early_release=' --no-early-device-release '
                 + extra_tf_arg,
+                test=atf_tr.ATEST_XML,
             )
         ],
     )
@@ -1218,6 +1323,44 @@ class AtestTradefedTestRunnerUnittests(unittest.TestCase):
 
     self.assertFalse(constants.TF_MODULE_FILTER in args)
     self.assertTrue(constants.TF_INCLUDE_FILTER in args)
+
+  def test_create_test_args_using_execution_plan_suite_runner(self):
+    """Test _create_test_args when using AtestExecutionPlanSuiteRunner."""
+    test_info1 = test_info.TestInfo(
+        test_name='test1',
+        test_runner='some_runner',
+        build_targets=set(),
+        data={'execution_plans': ['plan1', 'plan2']},
+    )
+    test_info2 = test_info.TestInfo(
+        test_name='test2',
+        test_runner='some_runner',
+        build_targets=set(),
+        data={'execution_plans': ['plan3']},
+    )
+    test_infos = [test_info1, test_info2]
+    with mock.patch(
+        'atest.atest_utils.get_build_out_dir'
+    ) as mock_get_build_out_dir:
+      zip_path = '/path/to/out/soong/test-configs.zip'
+      mock_get_build_out_dir.return_value = zip_path
+      args = self.tr._create_test_args(test_infos, {})
+      expected_args = [
+          '--execution-plans',
+          'plan1',
+          '--execution-plans',
+          'plan2',
+          '--execution-plans',
+          'plan3',
+          '--extra-file',
+          f'test-configs.zip={zip_path}',
+          '--config-zip-paths',
+          'test-configs.zip',
+      ]
+      self.assertEqual(args, expected_args)
+      mock_get_build_out_dir.assert_called_once_with(
+          acme_utils.TEST_CONFIGS_ZIP_PATH
+      )
 
   @mock.patch.object(
       atf_tr.AtestTradefedTestRunner,

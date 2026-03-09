@@ -15,6 +15,8 @@
 
 """Rollout control for Atest features."""
 
+import datetime
+import enum
 import functools
 import getpass
 import hashlib
@@ -25,8 +27,19 @@ from atest import atest_enum
 from atest import atest_utils
 from atest.metrics import metrics
 
-
 _ENABLED_VALUES = {'true', '1'}
+
+
+@enum.unique
+class _RandomizationType(enum.Enum):
+  """The type of random selection for the feature rollout control."""
+
+  # Deterministic by user, i.e. same user always gets the same enablement.
+  BY_USER = enum.auto()
+  # Deterministic by user and day, i.e. same user gets same enablement on the same day.
+  BY_USER_DAILY = enum.auto()
+  # Randomized based on the atest run_id, applicable to all features uniformly per run.
+  BY_RUN_ID = enum.auto()
 
 
 @functools.cache
@@ -61,6 +74,7 @@ class RolloutControlledFeature:
       feature_id: int | None = None,
       owners: list[str] | None = None,
       print_message: str | None = None,
+      randomization_type: _RandomizationType = _RandomizationType.BY_USER,
   ):
     """Initializes the object.
 
@@ -77,10 +91,13 @@ class RolloutControlledFeature:
           feature will be read from OWNERS file.
         print_message: The message to print to the console when the feature is
           enabled for the user.
+        randomization_type: The type of random selection for the feature rollout
+          control.
     """
     if rollout_percentage < 0 or rollout_percentage > 100:
       raise ValueError(
-          f'Rollout percentage must be in [0, 100]. Got {rollout_percentage} instead.'
+          f'Rollout percentage must be in [0, 100]. Got {rollout_percentage}'
+          ' instead.'
       )
     if feature_id is not None and feature_id <= 0:
       raise ValueError(
@@ -94,6 +111,7 @@ class RolloutControlledFeature:
     self._feature_id = feature_id
     self._owners = owners
     self._print_message = print_message
+    self._randomization_type = randomization_type
 
   def _check_env_control_flag(self) -> bool | None:
     """Checks the environment variable to override the feature enablement.
@@ -124,7 +142,8 @@ class RolloutControlledFeature:
 
     if not username:
       logging.debug(
-          f'Unable to determine the username. Disabling the feature {self._name}.'
+          'Unable to determine the username. Disabling the feature'
+          f' {self._name}.'
       )
       return False
 
@@ -132,7 +151,16 @@ class RolloutControlledFeature:
       return True
 
     hash_object = hashlib.sha256()
-    hash_object.update(f'{username} {self._name}'.encode('utf-8'))
+
+    if self._randomization_type == _RandomizationType.BY_RUN_ID:
+      hash_object.update(f'{metrics.get_run_id()} {self._name}'.encode('utf-8'))
+    else:
+      hash_object.update(f'{username} {self._name}'.encode('utf-8'))
+      if self._randomization_type == _RandomizationType.BY_USER_DAILY:
+        hash_object.update(
+            f' {datetime.date.today().isoformat()}'.encode('utf-8')
+        )
+
     return int(hash_object.hexdigest(), 16) % 100 < self._rollout_percentage
 
   @functools.cache
@@ -202,7 +230,20 @@ tf_preparer_incremental_setup = RolloutControlledFeature(
 
 atest_indexing_parallelization = RolloutControlledFeature(
     name='Atest indexing parallelization',
-    rollout_percentage=0,
+    rollout_percentage=5,
     env_control_flag='ATEST_INDEXING_PARALLEL',
     feature_id=4,
+    randomization_type=_RandomizationType.BY_RUN_ID,
+)
+
+# TODO: b/462794425 - Tracking bug for AtestExecutionPlanSuiteRunner feature.
+use_atest_execution_plan_suite_runner = RolloutControlledFeature(
+    name=(
+        'Use TF AtestExecutionPlanSuiteRunner when running TestExecutionPlans.'
+    ),
+    owners=['navil@google.com'],
+    rollout_percentage=0,
+    env_control_flag='USE_ATEST_EXECUTION_PLAN_SUITE_RUNNER',
+    feature_id=5,
+    print_message='Running tests using ExecutionPlanSuiteRunner.',
 )

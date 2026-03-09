@@ -42,6 +42,7 @@ from atest import constants
 from atest import module_info
 from atest import result_reporter
 from atest import rollout_control
+from atest.acme import acme_utils
 from atest.atest_enum import DetectType, ExitCode
 from atest.coverage import coverage
 from atest.crystalball import perf_mode
@@ -95,6 +96,9 @@ _TF_EXIT_CODE = [
 # The environment variable for TF preparer incremental setup.
 _INCREMENTAL_SETUP_KEY = 'TF_PREPARER_INCREMENTAL_SETUP'
 
+ATEST_XML = 'atest'
+ATEST_EXECUTION_PLAN_XML = 'atest-execution-plan'
+
 
 class Error(Exception):
   """Module-level error."""
@@ -141,7 +145,7 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
   )
   _RUN_CMD = (
       '{env} {exe} {template} '
-      '--template:map test=atest '
+      '--template:map test={test} '
       '--template:map log_saver={log_saver} '
       '{tf_customize_template} {log_args} {args}'
   )
@@ -535,7 +539,10 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
         if tf_subproc.poll() is not None and len(inputs) == 1:
           inputs.pop().close()
           if not reporter.all_test_results:
-            if atest_configs.GLOBAL_ARGS.user_type:
+            module_started = any(
+                h.state.get('current_group') for h in event_handlers.values()
+            )
+            if atest_configs.GLOBAL_ARGS.user_type and not module_started:
               atest_utils.colorful_print(
                   "The test module doesn't support "
                   f"'{atest_configs.GLOBAL_ARGS.user_type}' "
@@ -543,11 +550,10 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
                   constants.RED,
               )
             atest_utils.colorful_print(
-                r'No test results available. TradeFed did not find'
-                r' any test cases to run. This is possibly due to'
-                r' the no tests matching the current test filters'
-                r' or misconfigured AndroidTest.xml. Test Logs'
-                r' are saved in '
+                r'No test results available. This is possibly due to'
+                r' the no tests matching the current test filters, '
+                r'misconfigured AndroidTest.xml, or an internal crash from'
+                r' the TradeFed process. Test Logs are saved in '
                 f'{reporter.log_path}.',
                 constants.RED,
                 constants.WHITE,
@@ -928,11 +934,16 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
           if extra_args.get(constants.HOST)
           else self._TF_DEVICE_TEST_TEMPLATE
       )
+    if acme_utils.use_atest_execution_plan_suite_runner(test_infos):
+      self.run_cmd_dict['test'] = ATEST_EXECUTION_PLAN_XML
+    else:
+      self.run_cmd_dict['test'] = ATEST_XML
 
     args = self._create_test_args(test_infos, extra_args)
 
     # Create a copy of args as more args could be added to the list.
     test_args = list(args)
+
     if port:
       test_args.extend(['--subprocess-report-port', str(port)])
     if extra_args.get(constants.INVOCATION_ID, None):
@@ -967,6 +978,9 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
     log_level = 'VERBOSE'
     test_args.extend(['--log-level-display', log_level])
     test_args.extend(['--log-level', log_level])
+
+    # Sometimes required for getting test results in real time during TF run (b/407065783).
+    test_args.append('--remove-module-buffering')
 
     # Set no-early-device-release by default to speed up TF teardown time.
     # TODO(b/300882567) remove this forever when it's the default behavor.
@@ -1010,6 +1024,7 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
     for_test_mapping = test_infos and test_infos[0].from_test_mapping
     if is_log_upload_enabled(extra_args):
       test_args.extend(atest_utils.get_result_server_args(for_test_mapping))
+
     self.run_cmd_dict['args'] = ' '.join(test_args)
     self.run_cmd_dict['tf_customize_template'] = (
         self._extract_customize_tf_templates(extra_args)
@@ -1142,26 +1157,9 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
         return False
     return True
 
-  def _create_test_args(
-      self, test_infos: list[TestInfo], extra_args: Dict[str, Any]
-  ) -> list[str]:
-    """Compile TF command line args based on the given test infos.
-
-    Args:
-        test_infos: A list of TestInfo instances.
-        extra_args: A Dict of extra args for test runners to utilize.
-
-    Returns: A list of TF arguments to run the tests.
-    """
+  def _create_atest_runner_args(self, test_infos: List[TestInfo]) -> List[str]:
+    """Create test arguments for invoking AtestRunner."""
     args = []
-    if not test_infos:
-      return []
-
-    if atest_configs.GLOBAL_ARGS.group_test:
-      test_infos = self._flatten_test_infos(test_infos)
-
-    has_integration_test = False
-
     # Because current --include-filter arg will not working if ATest pass
     # both --module and --include-filter to TF, only test by --module will
     # be run. Make a check first, only use --module if all tests are all
@@ -1173,10 +1171,6 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
       use_module_arg = self._is_all_tests_parameter_auto_enabled(test_infos)
 
     for info in test_infos:
-      # Integration test exists in TF's jar, so it must have the option
-      # if it's integration finder.
-      if info.test_finder in _INTEGRATION_FINDERS:
-        has_integration_test = True
       # For non-parameterize test module, use --include-filter, but for
       # tests which have auto enable parameterize config use --module
       # instead.
@@ -1204,17 +1198,49 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
               option_value=option[1],
           )
           args.extend([constants.TF_MODULE_ARG, module_arg])
+    return args
 
-    # Add ATest include filter
+  def _create_test_args(
+      self, test_infos: list[TestInfo], extra_args: Dict[str, Any]
+  ) -> list[str]:
+    """Compile TF command line args based on the given test infos.
+
+    Args:
+        test_infos: A list of TestInfo instances.
+        extra_args: A Dict of extra args for test runners to utilize.
+
+    Returns: A list of TF arguments to run the tests.
+    """
+    args = []
+    if not test_infos:
+      return []
+
+    if atest_configs.GLOBAL_ARGS.group_test:
+      test_infos = self._flatten_test_infos(test_infos)
+
+    if acme_utils.use_atest_execution_plan_suite_runner(test_infos):
+      args.extend(
+          acme_utils.create_atest_execution_plan_suite_runner_test_args(
+              test_infos
+          )
+      )
+    else:
+      args.extend(self._create_atest_runner_args(test_infos))
+
+    # Add args common to both TF runners.
+
+    # Add ATest include filter.
     args.extend(
         get_include_filter(
             test_infos, extra_args.get(constants.TEST_FILTER, None)
         )
     )
 
+    # Integration test exists in TF's jar, so it must have the option if it's
+    # integration finder.
     # TODO (b/141090547) Pass the config path to TF to load configs.
     # Compile option in TF if finder is not INTEGRATION or not set.
-    if not has_integration_test:
+    if not any(info.test_finder in _INTEGRATION_FINDERS for info in test_infos):
       args.append(constants.TF_SKIP_LOADING_CONFIG_JAR)
     return args
 
@@ -1656,6 +1682,7 @@ class Test(ABC):
           Target('atest_script_help.sh', Variant.HOST),
           Target('atest_tradefed.sh', Variant.HOST),
           Target('tradefed', Variant.HOST),
+          Target('tradefed-contrib', Variant.HOST),
       ]
       + [Target(t, Variant.HOST) for t in constants.GTF_TARGETS]
   )

@@ -12,11 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
+import copy
 import pathlib
 import subprocess
+import sys
 import unittest
 
+from atest import atest_enum
 from atest import atest_utils
+from atest import unittest_constants
 from atest.acme import acme_test_constants
 from atest.acme import acme_utils
 from test_configs_proto import test_configs_pb2
@@ -246,6 +251,21 @@ class TestAcmeUtilsModule(unittest.TestCase):
     )
     self.assertCountEqual(expected_test_execution_plans, test_execution_plans)
 
+  def test_get_filtered_test_execution_plans_all_scheduling_plans(
+      self,
+  ):
+    """Tests getting test execution plans for all scheduling plans."""
+    expected_test_execution_plans = [
+        acme_test_constants.INLINE_WORKFLOW_SCHEDULING_PLAN_2_EXECUTION_PLAN,
+        acme_test_constants.TEST_EXECUTION_PLAN,
+        acme_test_constants.INLINE_WORKFLOW_EXECUTION_PLAN,
+    ]
+    test_execution_plans = acme_utils.get_filtered_test_execution_plans(
+        acme_test_constants.SAMPLE_TEST_CONFIG_MIXED_SCHEDULING_PLANS,
+        acme_utils.ALL_SCHEDULING_PLANS,
+    )
+    self.assertCountEqual(expected_test_execution_plans, test_execution_plans)
+
   def test_get_filtered_test_execution_plans_all_selected(self):
     """Tests getting execution plan when all belong to the scheduling plan."""
     expected_test_execution_plans = [
@@ -348,6 +368,56 @@ class TestAcmeUtilsModule(unittest.TestCase):
     )
     self.assertCountEqual([], test_execution_plans)
 
+  @unittest.mock.patch.object(sys, 'exit', autospec=True)
+  def test_ensure_no_incompatible_args_no_acme_args(self, mock_exit):
+    """Tests ensure_no_incompatible_args when no ACME args are passed in."""
+    args_dict = {arg: True for arg in acme_utils.ACME_INCOMPATIBLE_ARGS}
+    args = argparse.Namespace(**args_dict)
+    acme_utils.ensure_no_incompatible_args(args)
+    mock_exit.assert_not_called()
+
+  @unittest.mock.patch.object(sys, 'exit', autospec=True)
+  def test_ensure_no_incompatible_args_all_valid(self, mock_exit):
+    """Tests ensure_no_incompatible_args with valid flag combinations."""
+    for acme_arg in acme_utils.ACME_TRIGGER_ARGS:
+      with self.subTest(acme_arg=acme_arg):
+        mock_exit.reset_mock()
+        args_dict = {
+            acme_arg: True,
+            # Random atest flags.
+            'verbose': True,
+            'dry_run': True,
+        }
+        args = argparse.Namespace(**args_dict)
+        acme_utils.ensure_no_incompatible_args(args)
+        mock_exit.assert_not_called()
+
+  @unittest.mock.patch.object(atest_utils, 'print_and_log_error', autospec=True)
+  @unittest.mock.patch.object(sys, 'exit', autospec=True)
+  def test_ensure_no_incompatible_args_invalid_combinations(
+      self, mock_exit, mock_print_error
+  ):
+    """Tests ensure_no_incompatible_args with invalid flag combinations."""
+    for acme_arg in acme_utils.ACME_TRIGGER_ARGS:
+      for incompatible_arg in acme_utils.ACME_INCOMPATIBLE_ARGS:
+        with self.subTest(acme_arg=acme_arg, incompatible_arg=incompatible_arg):
+          mock_exit.reset_mock()
+          mock_print_error.reset_mock()
+          args_dict = {
+              acme_arg: True,
+              incompatible_arg: (
+                  ['fake-test'] if incompatible_arg == 'tests' else True
+              ),
+          }
+          args = argparse.Namespace(**args_dict)
+
+          acme_utils.ensure_no_incompatible_args(args)
+
+          mock_exit.assert_called_once_with(
+              atest_enum.ExitCode.INVALID_RUN_AFFECTED_TRIGGERS_ARGS
+          )
+          mock_print_error.assert_called_once()
+
   @unittest.mock.patch('subprocess.run', autospec=True)
   def test_get_current_project(self, mock_subprocess_run):
     """Tests that get_current_project returns the correct project."""
@@ -366,6 +436,102 @@ class TestAcmeUtilsModule(unittest.TestCase):
         capture_output=True,
         encoding='utf-8',
     )
+
+  def test_use_atest_execution_plan_suite_runner(self):
+    """Tests use_atest_execution_plan_suite_runner."""
+    test_info_with_plans = copy.deepcopy(unittest_constants.MODULE_INFO)
+    test_info_with_plans.data = {'execution_plans': ['plan1']}
+    test_info_no_plans = copy.deepcopy(unittest_constants.MODULE_INFO)
+    test_info_no_plans.data = {}
+
+    self.assertTrue(
+        acme_utils.use_atest_execution_plan_suite_runner([test_info_with_plans])
+    )
+    self.assertFalse(
+        acme_utils.use_atest_execution_plan_suite_runner([test_info_no_plans])
+    )
+    self.assertFalse(acme_utils.use_atest_execution_plan_suite_runner([]))
+
+  @unittest.mock.patch.object(atest_utils, 'get_build_out_dir', autospec=True)
+  def test_create_atest_execution_plan_suite_runner_test_args(
+      self, mock_get_build_out_dir
+  ):
+    """Tests create_atest_execution_plan_suite_runner_test_args."""
+    fake_zip_path = '/fake/path/to/test-configs.zip'
+    mock_get_build_out_dir.return_value = fake_zip_path
+    test_info1 = copy.deepcopy(unittest_constants.MODULE_INFO)
+    test_info1.data = {'execution_plans': ['plan1', 'plan2']}
+    test_info2 = copy.deepcopy(unittest_constants.MODULE_INFO2)
+    test_info2.data = {'execution_plans': ['plan3']}
+
+    args = acme_utils.create_atest_execution_plan_suite_runner_test_args(
+        [test_info1, test_info2]
+    )
+
+    expected_args = [
+        '--execution-plans',
+        'plan1',
+        '--execution-plans',
+        'plan2',
+        '--execution-plans',
+        'plan3',
+        '--extra-file',
+        f'test-configs.zip={fake_zip_path}',
+        '--config-zip-paths',
+        'test-configs.zip',
+    ]
+    self.assertEqual(expected_args, args)
+    mock_get_build_out_dir.assert_called_once_with(
+        acme_utils.TEST_CONFIGS_ZIP_PATH
+    )
+
+
+class TestModuleExecutionPlanMap(unittest.TestCase):
+  """Tests ModuleExecutionPlanMap dataclass."""
+
+  def test_get_all_module_names(self):
+    """Tests get_all_module_names."""
+    mapping = {
+        'module1': {'plan1', 'plan2'},
+        'module2': {'plan3'},
+    }
+    mep = acme_utils.ModuleExecutionPlanMap(mapping)
+
+    self.assertCountEqual(['module1', 'module2'], mep.get_all_module_names())
+
+  def test_get_execution_plans_for_module(self):
+    """Tests get_execution_plans_for_module."""
+    mapping = {
+        'module1': {'plan1', 'plan2'},
+        'module2': {'plan3'},
+    }
+    mep = acme_utils.ModuleExecutionPlanMap(mapping)
+
+    self.assertEqual(
+        {'plan1', 'plan2'}, mep.get_execution_plans_for_module('module1')
+    )
+    self.assertEqual({'plan3'}, mep.get_execution_plans_for_module('module2'))
+    self.assertEqual(set(), mep.get_execution_plans_for_module('unknown'))
+
+  def test_add_execution_plans_to_test_infos(self):
+    """Tests add_execution_plans_to_test_infos."""
+    mapping = {
+        unittest_constants.MODULE_NAME: {'plan1', 'plan2'},
+        unittest_constants.MODULE2_NAME: {'plan3'},
+    }
+    mep = acme_utils.ModuleExecutionPlanMap(mapping)
+
+    test_info1 = copy.deepcopy(unittest_constants.MODULE_INFO)
+    test_info1.data = {}
+    test_info2 = copy.deepcopy(unittest_constants.MODULE_INFO2)
+    test_info2.data = {}
+
+    mep.add_execution_plans_to_test_infos([test_info1, test_info2])
+
+    self.assertCountEqual(
+        ['plan1', 'plan2'], test_info1.data['execution_plans']
+    )
+    self.assertCountEqual(['plan3'], test_info2.data['execution_plans'])
 
 
 if __name__ == '__main__':

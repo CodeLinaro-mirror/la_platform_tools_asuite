@@ -15,6 +15,7 @@
 """Module for running test config modules directly."""
 
 import argparse
+import collections
 import sys
 
 from atest import atest_enum
@@ -24,21 +25,16 @@ from atest.acme import acme_utils
 from test_configs_proto import test_configs_pb2
 
 
-RUN_TEST_EXECUTION_PLANS_ARG_NAME = '--test-execution-plans'
-RUN_TEST_TRIGGERS_ARG_NAME = '--test-triggers'
-RUN_TEST_WORKFLOWS_ARG_NAME = '--test-workflows'
-
-
 def add_global_arguments(parser: argparse.ArgumentParser):
   """Adds flags for running test configs directly to the global argument parser."""
   parser.add_argument(
-      RUN_TEST_EXECUTION_PLANS_ARG_NAME,
+      acme_utils.RUN_TEST_EXECUTION_PLANS_ARG_NAME,
       default=[],
       nargs='+',
       help='Run the specified test execution plans.',
   )
   parser.add_argument(
-      RUN_TEST_TRIGGERS_ARG_NAME,
+      acme_utils.RUN_TEST_TRIGGERS_ARG_NAME,
       default=[],
       nargs='+',
       help=(
@@ -47,7 +43,7 @@ def add_global_arguments(parser: argparse.ArgumentParser):
       ),
   )
   parser.add_argument(
-      RUN_TEST_WORKFLOWS_ARG_NAME,
+      acme_utils.RUN_TEST_WORKFLOWS_ARG_NAME,
       default=[],
       nargs='+',
       help=(
@@ -63,10 +59,9 @@ def add_arguments(parser: argparse.ArgumentParser):
   pass
 
 
-# pylint: disable=unused-argument
 def process_parsed_args(args: argparse.Namespace):
   """Processes run direct mode related arguments."""
-  pass
+  acme_utils.ensure_no_incompatible_args(args)
 
 
 def _ensure_input_test_configs_exist(
@@ -101,6 +96,34 @@ def _ensure_input_test_configs_exist(
       error_message += f'\nMissing test triggers: {invalid_test_triggers}'
     atest_utils.print_and_log_warning(error_message)
     sys.exit(atest_enum.ExitCode.TEST_NOT_FOUND)
+
+
+def get_module_execution_plan_map(
+    test_execution_plan_names: list[str] | None = None,
+    test_workflow_names: list[str] | None = None,
+    test_trigger_names: list[str] | None = None,
+) -> acme_utils.ModuleExecutionPlanMap:
+  """Returns the ModuleExecutionPlanMap for the relevant TestExecutionPlans."""
+  # Get ExecutionPlans from TestConfigs.
+  test_execution_plans = _get_test_execution_plans(
+      test_execution_plan_names=test_execution_plan_names or [],
+      test_workflow_names=test_workflow_names or [],
+      test_trigger_names=test_trigger_names or [],
+  )
+
+  module_to_exec_plan_names_dict = collections.defaultdict(set)
+  for test_exec_plan in test_execution_plans:
+    for module_plan in test_exec_plan.tests:
+      module_to_exec_plan_names_dict[module_plan.module].add(
+          test_exec_plan.name
+      )
+  if not module_to_exec_plan_names_dict:
+    atest_utils.print_and_log_warning(
+        'All tests for the given test execution plans were disabled.'
+    )
+    sys.exit(atest_enum.ExitCode.TEST_NOT_FOUND)
+
+  return acme_utils.ModuleExecutionPlanMap(module_to_exec_plan_names_dict)
 
 
 def _get_test_execution_plans(
@@ -152,4 +175,9 @@ def get_test_details(
   )
 
   tests = [x.name for x in test_details]
+  if not tests:
+    atest_utils.print_and_log_warning(
+        'All tests for the given test execution plans were disabled.'
+    )
+    sys.exit(atest_enum.ExitCode.TEST_NOT_FOUND)
   return tests, test_details

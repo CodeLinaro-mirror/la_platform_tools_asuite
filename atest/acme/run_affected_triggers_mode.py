@@ -15,6 +15,7 @@
 """Module for running test triggers affected by the relevant files."""
 
 import argparse
+import collections
 import sys
 import typing
 
@@ -25,19 +26,12 @@ from atest.acme import acme_utils
 from atest.metrics import metrics
 from test_configs_proto import test_configs_pb2
 
-RUN_AFFECTED_TRIGGERS_ARG_NAME = '--run-affected-triggers'
-SCHEDULING_PLAN_ARG_NAME = '--scheduling-plan'
-DEFAULT_SCHEDULING_PLAN = 'presubmit'
-CURRENT_PROJECT_ARG_NAME = '--current-project'
-PROJECTS_ARG_NAME = '--projects'
-FILE_PATHS_ARG_NAME = '--file-paths'
-
 
 def add_global_arguments(parser: argparse.ArgumentParser):
   """Adds flags for running ACME test configs to the global argument parser."""
 
   parser.add_argument(
-      RUN_AFFECTED_TRIGGERS_ARG_NAME,
+      acme_utils.RUN_AFFECTED_TRIGGERS_ARG_NAME,
       default=False,
       action='store_true',
       help=(
@@ -50,17 +44,18 @@ def add_global_arguments(parser: argparse.ArgumentParser):
 def add_arguments(parser: argparse.ArgumentParser):
   """Adds arguments specific to --run-affected-triggers mode to the argument parser."""
   parser.add_argument(
-      SCHEDULING_PLAN_ARG_NAME,
+      acme_utils.SCHEDULING_PLAN_ARG_NAME,
       type=str,
       help=(
           '(For use with --run-affected-triggers) Only consider'
           ' test_execution_plans for the given scheduling plan. Defaults to'
-          ' "presubmit".'
+          ' "presubmit". Pass in "all" to run test_execution_plans for all'
+          ' scheduling plans.'
       ),
-      default=DEFAULT_SCHEDULING_PLAN,
+      default=acme_utils.DEFAULT_SCHEDULING_PLAN,
   )
   parser.add_argument(
-      CURRENT_PROJECT_ARG_NAME,
+      acme_utils.CURRENT_PROJECT_ARG_NAME,
       default=False,
       action='store_true',
       help=(
@@ -70,7 +65,7 @@ def add_arguments(parser: argparse.ArgumentParser):
       ),
   )
   parser.add_argument(
-      PROJECTS_ARG_NAME,
+      acme_utils.PROJECTS_ARG_NAME,
       default=[],
       nargs='*',
       help=(
@@ -80,7 +75,7 @@ def add_arguments(parser: argparse.ArgumentParser):
       ),
   )
   parser.add_argument(
-      FILE_PATHS_ARG_NAME,
+      acme_utils.FILE_PATHS_ARG_NAME,
       default=[],
       nargs='*',
       help=(
@@ -94,6 +89,7 @@ def add_arguments(parser: argparse.ArgumentParser):
 
 def process_parsed_args(args: argparse.Namespace):
   """Processes --run-affected-triggers related arguments."""
+  acme_utils.ensure_no_incompatible_args(args)
   if args.run_affected_triggers:
     metrics.LocalDetectEvent(
         detect_type=atest_enum.DetectType.RUN_AFFECTED_TRIGGERS_MODE, result=1
@@ -133,6 +129,31 @@ def _ensure_file_paths_exist(file_paths):
     sys.exit(atest_enum.ExitCode.INVALID_RUN_AFFECTED_TRIGGERS_ARGS)
 
 
+def get_module_execution_plan_map(
+    scheduling_plan_name: str,
+    current_project: bool | None = None,
+    projects: list[typing.Optional[str]] | None = None,
+    file_paths: list[typing.Optional[str]] | None = None,
+) -> acme_utils.ModuleExecutionPlanMap:
+  """Returns the ModuleExecutionPlanMap for the affected TestExecutionPlans."""
+  test_execution_plans = _get_test_execution_plans(
+      scheduling_plan_name, current_project, projects, file_paths
+  )
+  module_to_exec_plan_names_dict = collections.defaultdict(set)
+  for test_exec_plan in test_execution_plans:
+    for module_plan in test_exec_plan.tests:
+      module_to_exec_plan_names_dict[module_plan.module].add(
+          test_exec_plan.name
+      )
+
+  if not module_to_exec_plan_names_dict:
+    atest_utils.print_and_log_warning(
+        'All tests for the given test execution plans were disabled.'
+    )
+    sys.exit(atest_enum.ExitCode.TEST_NOT_FOUND)
+  return acme_utils.ModuleExecutionPlanMap(module_to_exec_plan_names_dict)
+
+
 def _get_test_execution_plans(
     scheduling_plan_name: str,
     current_project: bool | None = None,
@@ -149,7 +170,7 @@ def _get_test_execution_plans(
   test_configs = acme_utils.get_reduced_test_configs(
       projects, relative_file_paths
   )
-  if not test_configs:
+  if not test_configs or not test_configs.ListFields():
     atest_utils.print_and_log_warning(
         'No affected tests found based on the local changes.'
     )
@@ -186,4 +207,9 @@ def get_affected_test_details(
   )
 
   tests = [x.name for x in test_details]
+  if not tests:
+    atest_utils.print_and_log_warning(
+        'All tests for the given test execution plans were disabled.'
+    )
+    sys.exit(atest_enum.ExitCode.TEST_NOT_FOUND)
   return tests, test_details

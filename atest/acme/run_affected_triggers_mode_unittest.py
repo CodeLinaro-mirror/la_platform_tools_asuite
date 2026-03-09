@@ -32,6 +32,9 @@ class TestRunAffectedTriggersModeModule(unittest.TestCase):
   @unittest.mock.patch.object(
       acme_utils, 'get_file_paths_relative_to_build_top', autospec=True
   )
+  @unittest.mock.patch.object(
+      acme_utils, 'ensure_no_incompatible_args', autospec=True
+  )
   @unittest.mock.patch.object(sys, 'exit', autospec=True)
   @unittest.mock.patch.object(
       run_affected_triggers_mode.atest_utils,
@@ -42,6 +45,7 @@ class TestRunAffectedTriggersModeModule(unittest.TestCase):
       self,
       mock_print_and_log_error,
       mock_sys_exit,
+      mock_ensure_no_incompatible_args,
       mock_get_rel_paths,
       mock_get_current_project,
       mock_local_detect_event,
@@ -100,6 +104,7 @@ class TestRunAffectedTriggersModeModule(unittest.TestCase):
         # Set up mocks.
         mock_sys_exit.reset_mock()
         mock_print_and_log_error.reset_mock()
+        mock_ensure_no_incompatible_args.reset_mock()
         mock_get_rel_paths.reset_mock()
         mock_get_rel_paths.return_value = ([], [])
         mock_get_current_project.reset_mock()
@@ -111,6 +116,7 @@ class TestRunAffectedTriggersModeModule(unittest.TestCase):
         run_affected_triggers_mode.process_parsed_args(args)
 
         # Assertions.
+        mock_ensure_no_incompatible_args.assert_called_once_with(args)
         mock_sys_exit.assert_not_called()
         mock_print_and_log_error.assert_not_called()
         if args.file_paths:
@@ -280,12 +286,17 @@ class TestRunAffectedTriggersModeModule(unittest.TestCase):
         'Unable to determine the current repo project.'
     )
 
+  @unittest.mock.patch(
+      'atest.acme.run_affected_triggers_mode.atest_utils.print_and_log_warning',
+      autospec=True,
+  )
   @unittest.mock.patch.object(
       acme_utils, 'get_reduced_test_configs', autospec=True
   )
   def test_get_affected_test_details_no_affected_tests(
       self,
       mock_get_reduced_test_configs,
+      mock_print_and_log_warning,
   ):
     """Test get_affected_test_details exits if no tests are affected."""
     # Set up mocks.
@@ -300,14 +311,52 @@ class TestRunAffectedTriggersModeModule(unittest.TestCase):
     )
 
     # Assertions.
-    mock_sys_exit.assert_called_once_with(atest_enum.ExitCode.TEST_NOT_FOUND)
+    mock_sys_exit.assert_called_with(atest_enum.ExitCode.TEST_NOT_FOUND)
+    mock_print_and_log_warning.assert_any_call(
+        'No affected tests found based on the local changes.'
+    )
 
+  @unittest.mock.patch(
+      'atest.acme.run_affected_triggers_mode.atest_utils.print_and_log_warning',
+      autospec=True,
+  )
+  @unittest.mock.patch.object(
+      run_affected_triggers_mode, '_get_test_execution_plans', autospec=True
+  )
+  def test_get_affected_test_details_all_affected_tests_disabled(
+      self, mock_get_exec_plans, mock_print_and_log_warning
+  ):
+    """Test get_affected_test_details if all affected tests are disabled."""
+    # Set up mocks.
+    mock_get_exec_plans.return_value = [
+        test_configs_pb2.TestExecutionPlan(name='sample', tests=[])
+    ]
+    mock_sys_exit = self.enterContext(
+        unittest.mock.patch.object(sys, 'exit', autospec=True)
+    )
+
+    # Function call.
+    run_affected_triggers_mode.get_affected_test_details(
+        acme_test_constants.SCHEDULING_PLAN.name
+    )
+
+    # Assertions.
+    mock_sys_exit.assert_called_with(atest_enum.ExitCode.TEST_NOT_FOUND)
+    mock_print_and_log_warning.assert_any_call(
+        'All tests for the given test execution plans were disabled.'
+    )
+
+  @unittest.mock.patch(
+      'atest.acme.run_affected_triggers_mode.atest_utils.print_and_log_warning',
+      autospec=True,
+  )
   @unittest.mock.patch.object(
       acme_utils, 'get_reduced_test_configs', autospec=True
   )
   def test_get_affected_test_details_all_filtered_out(
       self,
       mock_get_reduced_test_configs,
+      mock_print_and_log_warning,
   ):
     """Test get_affected_test_details exits if all plans are filtered out."""
     # Set up mocks.
@@ -324,7 +373,11 @@ class TestRunAffectedTriggersModeModule(unittest.TestCase):
     )
 
     # Assertions.
-    mock_sys_exit.assert_called_once_with(atest_enum.ExitCode.TEST_NOT_FOUND)
+    mock_sys_exit.assert_called_with(atest_enum.ExitCode.TEST_NOT_FOUND)
+    mock_print_and_log_warning.assert_any_call(
+        'No affected tests found for scheduling plan'
+        ' some-other-scheduling-plan. Available scheduling plans: []'
+    )
 
   @unittest.mock.patch.object(
       acme_utils, 'get_reduced_test_configs', autospec=True
@@ -470,6 +523,218 @@ class TestRunAffectedTriggersModeModule(unittest.TestCase):
     )
 
     self.assertCountEqual(expected_return_val, actual_return_val)
+    mock_get_reduced_test_configs.assert_called_once_with([mock_project], [])
+    mock_get_current_project.assert_called_once()
+
+  @unittest.mock.patch(
+      'atest.acme.run_affected_triggers_mode.atest_utils.print_and_log_warning',
+      autospec=True,
+  )
+  @unittest.mock.patch.object(
+      acme_utils, 'get_reduced_test_configs', autospec=True
+  )
+  def test_get_module_execution_plan_map_no_affected_tests(
+      self,
+      mock_get_reduced_test_configs,
+      mock_print_and_log_warning,
+  ):
+    """Test get_module_execution_plan_map exits if no tests are affected."""
+    # Set up mocks.
+    mock_get_reduced_test_configs.return_value = test_configs_pb2.TestConfigs()
+    mock_sys_exit = self.enterContext(
+        unittest.mock.patch.object(sys, 'exit', autospec=True)
+    )
+
+    # Function call.
+    run_affected_triggers_mode.get_module_execution_plan_map(
+        acme_test_constants.SCHEDULING_PLAN.name
+    )
+
+    # Assertions.
+    mock_sys_exit.assert_called_with(atest_enum.ExitCode.TEST_NOT_FOUND)
+    mock_print_and_log_warning.assert_any_call(
+        'No affected tests found based on the local changes.'
+    )
+
+  @unittest.mock.patch(
+      'atest.acme.run_affected_triggers_mode.atest_utils.print_and_log_warning',
+      autospec=True,
+  )
+  @unittest.mock.patch.object(
+      run_affected_triggers_mode, '_get_test_execution_plans', autospec=True
+  )
+  def test_get_module_execution_plan_map_all_affected_tests_disabled(
+      self, mock_get_test_exec_plans, mock_print_and_log_warning
+  ):
+    """Test get_module_execution_plan_map exits if all tests were disabled."""
+    # Set up mocks.
+    mock_get_test_exec_plans.return_value = [
+        test_configs_pb2.TestExecutionPlan(name='sample', tests=[])
+    ]
+    mock_sys_exit = self.enterContext(
+        unittest.mock.patch.object(sys, 'exit', autospec=True)
+    )
+
+    # Function call.
+    run_affected_triggers_mode.get_module_execution_plan_map(
+        acme_test_constants.SCHEDULING_PLAN.name
+    )
+
+    # Assertions.
+    mock_sys_exit.assert_called_with(atest_enum.ExitCode.TEST_NOT_FOUND)
+    mock_print_and_log_warning.assert_any_call(
+        'All tests for the given test execution plans were disabled.'
+    )
+
+  @unittest.mock.patch(
+      'atest.acme.run_affected_triggers_mode.atest_utils.print_and_log_warning',
+      autospec=True,
+  )
+  @unittest.mock.patch.object(
+      acme_utils, 'get_reduced_test_configs', autospec=True
+  )
+  def test_get_module_execution_plan_map_all_filtered_out(
+      self,
+      mock_get_reduced_test_configs,
+      mock_print_and_log_warning,
+  ):
+    """Test get_module_execution_plan_map exits if all plans are filtered out."""
+    # Set up mocks.
+    mock_get_reduced_test_configs.return_value = (
+        acme_test_constants.SAMPLE_TEST_CONFIG
+    )
+    mock_sys_exit = self.enterContext(
+        unittest.mock.patch.object(sys, 'exit', autospec=True)
+    )
+
+    # Function call.
+    run_affected_triggers_mode.get_module_execution_plan_map(
+        'some-other-scheduling-plan'
+    )
+
+    # Assertions.
+    mock_sys_exit.assert_called_with(atest_enum.ExitCode.TEST_NOT_FOUND)
+    mock_print_and_log_warning.assert_any_call(
+        'No affected tests found for scheduling plan'
+        ' some-other-scheduling-plan. Available scheduling plans: []'
+    )
+
+  @unittest.mock.patch.object(
+      acme_utils, 'get_reduced_test_configs', autospec=True
+  )
+  def test_get_module_execution_plan_map(
+      self,
+      mock_get_reduced_test_configs,
+  ):
+    """Tests that get_module_execution_plan_map returns correct plans."""
+    # Set up mocks.
+    mock_get_reduced_test_configs.return_value = (
+        acme_test_constants.SAMPLE_TEST_CONFIG
+    )
+
+    # Function call.
+    mep = run_affected_triggers_mode.get_module_execution_plan_map(
+        acme_test_constants.SCHEDULING_PLAN.name,
+    )
+
+    self.assertCountEqual(
+        [
+            unittest_constants.MODULE_NAME,
+            unittest_constants.MODULE2_NAME,
+        ],
+        mep.get_all_module_names(),
+    )
+
+  @unittest.mock.patch.object(
+      acme_utils, 'get_reduced_test_configs', autospec=True
+  )
+  def test_get_module_execution_plan_map_specific_projects(
+      self,
+      mock_get_reduced_test_configs,
+  ):
+    """Tests get_module_execution_plan_map with specific projects."""
+    # Set up mocks.
+    mock_get_reduced_test_configs.return_value = (
+        acme_test_constants.SAMPLE_TEST_CONFIG
+    )
+
+    # Function call.
+    test_projects = ['some/mock/project-a', 'another/mock/project-b']
+    mep = run_affected_triggers_mode.get_module_execution_plan_map(
+        acme_test_constants.SCHEDULING_PLAN.name, projects=test_projects
+    )
+
+    self.assertCountEqual(
+        [
+            unittest_constants.MODULE_NAME,
+            unittest_constants.MODULE2_NAME,
+        ],
+        mep.get_all_module_names(),
+    )
+    mock_get_reduced_test_configs.assert_called_once_with(test_projects, [])
+
+  @unittest.mock.patch.object(
+      acme_utils, 'get_file_paths_relative_to_build_top', autospec=True
+  )
+  @unittest.mock.patch.object(
+      acme_utils, 'get_reduced_test_configs', autospec=True
+  )
+  def test_get_module_execution_plan_map_specific_file_paths(
+      self, mock_get_reduced_test_configs, mock_get_rel_paths
+  ):
+    """Tests get_module_execution_plan_map with specific file paths."""
+    # Set up mocks.
+    mock_get_reduced_test_configs.return_value = (
+        acme_test_constants.SAMPLE_TEST_CONFIG
+    )
+    rel_paths = ['a/b/c', 'd/e/f']
+    mock_get_rel_paths.return_value = (rel_paths, [])
+
+    # Function call.
+    test_file_paths = ['/some/path/a/b/c', '/another/path/d/e/f']
+    mep = run_affected_triggers_mode.get_module_execution_plan_map(
+        acme_test_constants.SCHEDULING_PLAN.name, file_paths=test_file_paths
+    )
+
+    self.assertCountEqual(
+        [
+            unittest_constants.MODULE_NAME,
+            unittest_constants.MODULE2_NAME,
+        ],
+        mep.get_all_module_names(),
+    )
+    mock_get_reduced_test_configs.assert_called_once_with(None, rel_paths)
+    mock_get_rel_paths.assert_called_once_with(test_file_paths)
+
+  @unittest.mock.patch.object(acme_utils, 'get_current_project', autospec=True)
+  @unittest.mock.patch.object(
+      acme_utils, 'get_reduced_test_configs', autospec=True
+  )
+  def test_get_module_execution_plan_map_current_project(
+      self,
+      mock_get_reduced_test_configs,
+      mock_get_current_project,
+  ):
+    """Tests get_module_execution_plan_map with current project."""
+    # Set up mocks.
+    mock_get_reduced_test_configs.return_value = (
+        acme_test_constants.SAMPLE_TEST_CONFIG
+    )
+    mock_project = 'some/mock/project'
+    mock_get_current_project.return_value = mock_project
+
+    # Function call.
+    mep = run_affected_triggers_mode.get_module_execution_plan_map(
+        acme_test_constants.SCHEDULING_PLAN.name, current_project=True
+    )
+
+    self.assertCountEqual(
+        [
+            unittest_constants.MODULE_NAME,
+            unittest_constants.MODULE2_NAME,
+        ],
+        mep.get_all_module_names(),
+    )
     mock_get_reduced_test_configs.assert_called_once_with([mock_project], [])
     mock_get_current_project.assert_called_once()
 
