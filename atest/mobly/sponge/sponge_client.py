@@ -37,9 +37,7 @@ class SpongeClient:
           f"--headers={headers_str}",
           f"--data={body}",
       ]
-      # Log the command without headers to avoid exposing the API key.
-      command_to_log = [c for c in command if not c.startswith("--headers=")]
-      logging.info("Executing command: %s", " ".join(command_to_log))
+      logging.info("Executing command: %s", " ".join(command))
       result = subprocess.run(
           command,
           capture_output=True,
