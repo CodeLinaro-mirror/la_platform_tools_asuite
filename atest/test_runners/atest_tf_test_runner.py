@@ -550,9 +550,9 @@ class AtestTradefedTestRunner(trb.TestRunnerBase):
                   constants.RED,
               )
             atest_utils.colorful_print(
-                r'No test results available. This is possibly due to'
-                r' the no tests matching the current test filters, '
-                r'misconfigured AndroidTest.xml, or an internal crash from'
+                r'No test results available from TradeFed. This is possibly'
+                r' due to no tests matching the current test filters,'
+                r' a misconfigured AndroidTest.xml, or an internal crash from'
                 r' the TradeFed process. Test Logs are saved in '
                 f'{reporter.log_path}.',
                 constants.RED,
@@ -1574,6 +1574,11 @@ def extra_args_to_tf_args(
           '--test-arg',
           (
               'com.android.compatibility.testtype.LibcoreTest:'
+              f'test-timeout:{arg_value}'
+          ),
+          '--test-arg',
+          (
+              'com.android.tradefed.testtype.InstrumentationTest:'
               f'test-timeout:{arg_value}'
           ),
       ],
