@@ -52,7 +52,7 @@ from pyfakefs import fake_filesystem_unittest
 # TODO(147567606): Replace {serial} with {extra_args} for general extra
 # arguments testing.
 RUN_CMD_ARGS = (
-    '--log-level-display VERBOSE --log-level VERBOSE'
+    '--log-level-display VERBOSE --log-level VERBOSE --remove-module-buffering'
     '{device_early_release}{serial}'
 )
 LOG_ARGS = atf_tr.AtestTradefedTestRunner._LOG_ARGS.format(
@@ -1653,6 +1653,20 @@ class ExtraArgsTest(AtestTradefedTestRunnerUnittests):
 
     self.assertTokensIn(
         ['--enable-parameterized-modules', '--module-parameter', 'instant_app'],
+        cmd[0],
+    )
+
+  def test_args_with_run_in_compatibility_mode_and_generate_in_run_cmd(self):
+    extra_args = {constants.RUN_IN_COMPATIBILITY_MODE: True}
+
+    cmd = self.tr.generate_run_commands([], extra_args)
+
+    self.assertTokensIn(
+        [
+            '--enable-parameterized-modules',
+            '--module-parameter',
+            'compatibility_mode',
+        ],
         cmd[0],
     )
 
