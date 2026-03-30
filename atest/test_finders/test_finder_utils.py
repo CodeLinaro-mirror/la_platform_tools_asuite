@@ -1372,6 +1372,18 @@ def _get_config_srcs_tuple_when_no_module_info(
   """Get test config and srcs by iterating the whole module_info."""
 
   def get_config_srcs(info: Dict[str, Any], test_name: str):
+    if info is None:
+      print(
+          atest_utils.colorful_print(
+              'Unexpected internal error on None module info, it is possible'
+              ' that your repo output is corrupted. Please rerun the atest'
+              ' command with --rebuild-module-info flag to force rebuild the'
+              ' soong module info. If problems persist, please file a bug to'
+              ' atest team with reproduce steps.',
+              constants.RED,
+          )
+      )
+      sys.exit(ExitCode.ERROR)
     test_configs = info.get(constants.MODULE_TEST_CONFIG, [])
     for test_config in test_configs:
       config_path = atest_utils.get_build_top(test_config)
