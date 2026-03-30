@@ -75,7 +75,6 @@ from atest.tools import fetch_artifact
 from atest.tools import indexing
 from atest.tools import start_avd as avd
 
-
 EXPECTED_VARS = frozenset([
     constants.ANDROID_BUILD_TOP,
     'ANDROID_TARGET_OUT_TESTCASES',
