@@ -680,6 +680,61 @@ class AtestMainUnitTests(unittest.TestCase):
         any_order=False,
     )
 
+  @mock.patch.object(rollout_control.early_device_check, 'is_enabled', return_value=True)
+  @mock.patch.object(atest_utils, 'load_test_info_cache')
+  @mock.patch.object(atest_main, '_validate_adb_devices')
+  @mock.patch.object(atest_utils, 'get_product_out')
+  def test_perform_early_device_check_with_cache_hit(self, mock_get_product_out, mock_validate, mock_load_cache, _mock_is_enabled):
+    """Tests that early device check succeeds and short-circuits using cached test infos."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=['test_a', 'test_b'])
+    pseudo_atest_main._steps = atest_main.parse_steps(pseudo_atest_main._args)
+
+    mock_load_cache.side_effect = [['test_info_a'], ['test_info_b']]
+
+    self.assertIsNone(pseudo_atest_main._perform_early_device_check())
+
+    mock_validate.assert_called_once_with(pseudo_atest_main._args, ['test_info_a', 'test_info_b'])
+    mock_get_product_out.assert_not_called()
+
+  @mock.patch.object(rollout_control.early_device_check, 'is_enabled', return_value=True)
+  @mock.patch.object(atest_utils, 'load_test_info_cache')
+  @mock.patch.object(atest_main, '_validate_adb_devices')
+  @mock.patch.object(atest_utils, 'get_product_out')
+  @mock.patch.object(module_info, 'load', return_value=None)
+  def test_perform_early_device_check_with_cache_miss(self, mock_load_module_info, mock_get_product_out, mock_validate, mock_load_cache, _mock_is_enabled):
+    """Tests that early device check falls back when cache misses, but still checks partial cache."""
+    mock_get_product_out.return_value.is_file.return_value = True
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=['test_a', 'test_b'])
+    pseudo_atest_main._steps = atest_main.parse_steps(pseudo_atest_main._args)
+
+    mock_load_cache.side_effect = [['test_info_a'], None]
+
+    self.assertIsNone(pseudo_atest_main._perform_early_device_check())
+
+    mock_validate.assert_called_once_with(pseudo_atest_main._args, ['test_info_a'])
+
+    mock_load_module_info.assert_called_once()
+
+  @mock.patch.object(rollout_control.early_device_check, 'is_enabled', return_value=True)
+  @mock.patch.object(atest_utils, 'load_test_info_cache')
+  @mock.patch.object(atest_main, '_validate_adb_devices')
+  @mock.patch.object(atest_utils, 'get_product_out')
+  @mock.patch.object(module_info, 'load', return_value=None)
+  def test_perform_early_device_check_with_clear_cache(self, mock_load_module_info, mock_get_product_out, mock_validate, mock_load_cache, _mock_is_enabled):
+    """Tests that early device check ignores cache if --clear-cache is set."""
+    mock_get_product_out.return_value.is_file.return_value = True
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=['-c', 'test_a'])
+    pseudo_atest_main._steps = atest_main.parse_steps(pseudo_atest_main._args)
+
+    self.assertIsNone(pseudo_atest_main._perform_early_device_check())
+
+    mock_load_cache.assert_not_called()
+    mock_validate.assert_not_called()
+    mock_load_module_info.assert_not_called()
+
   @mock.patch.object(
       rollout_control.early_device_check, 'is_enabled', return_value=False
   )
