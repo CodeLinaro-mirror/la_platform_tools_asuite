@@ -12,11 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
 import copy
+import glob
 import pathlib
 import subprocess
+import sys
 import unittest
 
+from atest import atest_enum
 from atest import atest_utils
 from atest import unittest_constants
 from atest.acme import acme_test_constants
@@ -132,41 +136,74 @@ class TestAcmeUtilsModule(unittest.TestCase):
         raise FileNotFoundError
       return pathlib.Path(str(path_instance))
 
+    invalid_glob_count = 0
+
+    def mock_glob_side_effect(pattern, recursive=False):
+      nonlocal invalid_glob_count
+      _ = recursive
+      if 'invalid' in pattern:
+        invalid_glob_count += 1
+        return []
+      return [pattern]
+
     test_cases = [
         {
             'name': 'all_valid_paths',
             'file_paths': [
                 f'{MOCK_BUILD_TOP_PATH}/a/b',
                 f'{MOCK_BUILD_TOP_PATH}/c',
+                f'{MOCK_BUILD_TOP_PATH}/**/*',
             ],
-            'expected': (['a/b', 'c'], []),
+            'expected': (['a/b', 'c', '**/*'], []),
         },
         {
             'name': 'all_invalid_paths',
-            'file_paths': ['/invalid/path1', '/another/invalid/path'],
-            'expected': ([], ['/invalid/path1', '/another/invalid/path']),
+            'file_paths': [
+                '/invalid/path1',
+                '/another/invalid/path',
+                '/invalid/**/*',
+            ],
+            'expected': (
+                [],
+                ['/invalid/path1', '/another/invalid/path', '/invalid/**/*'],
+            ),
         },
         {
             'name': 'mixed_paths',
             'file_paths': [
                 f'{MOCK_BUILD_TOP_PATH}/a/b',
+                f'{MOCK_BUILD_TOP_PATH}/c/*',
                 '/some/invalid/path',
+                '/some/invalid/glob/*',
             ],
-            'expected': (['a/b'], ['/some/invalid/path']),
+            'expected': (
+                ['a/b', 'c/*'],
+                ['/some/invalid/path', '/some/invalid/glob/*'],
+            ),
         },
         {'name': 'empty_list', 'file_paths': [], 'expected': ([], [])},
     ]
 
-    with unittest.mock.patch.object(
-        pathlib.Path,
-        'resolve',
-        side_effect=mock_resolve_side_effect,
-        autospec=True,
-    ) as mock_resolve:
+    with (
+        unittest.mock.patch.object(
+            pathlib.Path,
+            'resolve',
+            side_effect=mock_resolve_side_effect,
+            autospec=True,
+        ) as mock_resolve,
+        unittest.mock.patch.object(
+            glob,
+            'glob',
+            side_effect=mock_glob_side_effect,
+            autospec=True,
+        ) as mock_glob,
+    ):
       for test_case in test_cases:
         with self.subTest(test_case['name']):
           mock_get_build_top.reset_mock()
           mock_resolve.reset_mock()
+          mock_glob.reset_mock()
+          invalid_glob_count = 0
           expected_relative_paths, expected_invalid_paths = test_case[
               'expected'
           ]
@@ -181,9 +218,11 @@ class TestAcmeUtilsModule(unittest.TestCase):
           self.assertEqual(
               len(expected_relative_paths), mock_get_build_top.call_count
           )
-          # resolve should be called once for each path.
+          # Each valid path will call resolve once and glob 0 or 1 times,
+          # but an invalid glob will not call resolve.
           self.assertEqual(
-              len(test_case['file_paths']), mock_resolve.call_count
+              len(test_case['file_paths']),
+              mock_resolve.call_count + invalid_glob_count,
           )
 
   def test_create_test_details_from_test_execution_plans(self):
@@ -237,22 +276,60 @@ class TestAcmeUtilsModule(unittest.TestCase):
     mock_build.assert_called_once_with([acme_utils.TEST_CONFIGS_BUILD_TARGET])
     mock_open_builtin.assert_called_once_with(fake_pb_path, 'rb')
 
+  def test_get_filtered_test_execution_plans_inline_workflows_ignored(self):
+    """Tests get_filtered_test_execution_plans ignores inline workflows."""
+
+    # Test configs only contain inlined workflows.
+    mock_test_configs = test_configs_pb2.TestConfigs(
+        triggers=[
+            test_configs_pb2.TestTrigger(
+                name='sample-inline-workflow',
+                inline=test_configs_pb2.TestWorkflowInline(
+                    scheduling_plan=acme_test_constants.SCHEDULING_PLAN,
+                    tests=[
+                        acme_test_constants.MODULE2_PLAN,
+                        acme_test_constants.MODULE_PLAN_SIMPLE,
+                    ],
+                ),
+            )
+        ]
+    )
+    test_execution_plans = acme_utils.get_filtered_test_execution_plans(
+        mock_test_configs,
+        acme_test_constants.SCHEDULING_PLAN_2.name,
+    )
+    self.assertCountEqual([], test_execution_plans)
+
   def test_get_filtered_test_execution_plans_mixed_scheduling_plans(self):
     """Tests filtering test execution plans by scheduling plan."""
-    expected_test_execution_plans = [
-        acme_test_constants.INLINE_WORKFLOW_SCHEDULING_PLAN_2_EXECUTION_PLAN
-    ]
+    expected_test_execution_plans = [acme_test_constants.TEST_EXECUTION_PLAN_3]
     test_execution_plans = acme_utils.get_filtered_test_execution_plans(
         acme_test_constants.SAMPLE_TEST_CONFIG_MIXED_SCHEDULING_PLANS,
         acme_test_constants.SCHEDULING_PLAN_2.name,
     )
     self.assertCountEqual(expected_test_execution_plans, test_execution_plans)
 
+  def test_get_filtered_test_execution_plans_all_scheduling_plans(
+      self,
+  ):
+    """Tests getting test execution plans for all scheduling plans."""
+    expected_test_execution_plans = [
+        acme_test_constants.TEST_EXECUTION_PLAN,
+        acme_test_constants.TEST_EXECUTION_PLAN_2,
+        acme_test_constants.TEST_EXECUTION_PLAN_3,
+    ]
+    test_execution_plans = acme_utils.get_filtered_test_execution_plans(
+        acme_test_constants.SAMPLE_TEST_CONFIG_MIXED_SCHEDULING_PLANS,
+        acme_utils.ALL_SCHEDULING_PLANS,
+    )
+    self.assertCountEqual(expected_test_execution_plans, test_execution_plans)
+
   def test_get_filtered_test_execution_plans_all_selected(self):
     """Tests getting execution plan when all belong to the scheduling plan."""
     expected_test_execution_plans = [
-        acme_test_constants.INLINE_WORKFLOW_EXECUTION_PLAN,
         acme_test_constants.TEST_EXECUTION_PLAN,
+        acme_test_constants.TEST_EXECUTION_PLAN_2,
+        acme_test_constants.TEST_EXECUTION_PLAN_3,
     ]
     test_execution_plans = acme_utils.get_filtered_test_execution_plans(
         acme_test_constants.SAMPLE_TEST_CONFIG,
@@ -263,8 +340,9 @@ class TestAcmeUtilsModule(unittest.TestCase):
   def test_get_filtered_test_execution_plans_only_references(self):
     """Tests getting execution plans when test-triggers contain references."""
     expected_test_execution_plans = [
-        acme_test_constants.INLINE_WORKFLOW_EXECUTION_PLAN,
         acme_test_constants.TEST_EXECUTION_PLAN,
+        acme_test_constants.TEST_EXECUTION_PLAN_2,
+        acme_test_constants.TEST_EXECUTION_PLAN_3,
     ]
     test_execution_plans = acme_utils.get_filtered_test_execution_plans(
         acme_test_constants.SAMPLE_FULL_TEST_CONFIGS,
@@ -332,7 +410,7 @@ class TestAcmeUtilsModule(unittest.TestCase):
     expected_plans = [acme_test_constants.TEST_EXECUTION_PLAN]
     test_execution_plans = acme_utils.get_execution_plans_for_test_triggers(
         acme_test_constants.SAMPLE_FULL_TEST_CONFIGS,
-        [acme_test_constants.TEST_TRIGGER_LIST_WORKFLOW.name],
+        [acme_test_constants.TEST_TRIGGER_1.name],
     )
     self.assertCountEqual(expected_plans, test_execution_plans)
 
@@ -349,6 +427,56 @@ class TestAcmeUtilsModule(unittest.TestCase):
         acme_test_constants.SAMPLE_FULL_TEST_CONFIGS, ['invalid-trigger']
     )
     self.assertCountEqual([], test_execution_plans)
+
+  @unittest.mock.patch.object(sys, 'exit', autospec=True)
+  def test_ensure_no_incompatible_args_no_acme_args(self, mock_exit):
+    """Tests ensure_no_incompatible_args when no ACME args are passed in."""
+    args_dict = {arg: True for arg in acme_utils.ACME_INCOMPATIBLE_ARGS}
+    args = argparse.Namespace(**args_dict)
+    acme_utils.ensure_no_incompatible_args(args)
+    mock_exit.assert_not_called()
+
+  @unittest.mock.patch.object(sys, 'exit', autospec=True)
+  def test_ensure_no_incompatible_args_all_valid(self, mock_exit):
+    """Tests ensure_no_incompatible_args with valid flag combinations."""
+    for acme_arg in acme_utils.ACME_TRIGGER_ARGS:
+      with self.subTest(acme_arg=acme_arg):
+        mock_exit.reset_mock()
+        args_dict = {
+            acme_arg: True,
+            # Random atest flags.
+            'verbose': True,
+            'dry_run': True,
+        }
+        args = argparse.Namespace(**args_dict)
+        acme_utils.ensure_no_incompatible_args(args)
+        mock_exit.assert_not_called()
+
+  @unittest.mock.patch.object(atest_utils, 'print_and_log_error', autospec=True)
+  @unittest.mock.patch.object(sys, 'exit', autospec=True)
+  def test_ensure_no_incompatible_args_invalid_combinations(
+      self, mock_exit, mock_print_error
+  ):
+    """Tests ensure_no_incompatible_args with invalid flag combinations."""
+    for acme_arg in acme_utils.ACME_TRIGGER_ARGS:
+      for incompatible_arg in acme_utils.ACME_INCOMPATIBLE_ARGS:
+        with self.subTest(acme_arg=acme_arg, incompatible_arg=incompatible_arg):
+          mock_exit.reset_mock()
+          mock_print_error.reset_mock()
+          args_dict = {
+              acme_arg: True,
+              incompatible_arg: (
+                  ['fake-test'] if incompatible_arg == 'tests' else True
+              ),
+          }
+          args = argparse.Namespace(**args_dict)
+
+          acme_utils.ensure_no_incompatible_args(args)
+
+          mock_exit.assert_called_once_with(
+              atest_enum.ExitCode.INVALID_RUN_AFFECTED_TRIGGERS_ARGS
+          )
+          mock_print_error.assert_called_once()
 
   @unittest.mock.patch('subprocess.run', autospec=True)
   def test_get_current_project(self, mock_subprocess_run):
@@ -394,12 +522,13 @@ class TestAcmeUtilsModule(unittest.TestCase):
     test_info1 = copy.deepcopy(unittest_constants.MODULE_INFO)
     test_info1.data = {'execution_plans': ['plan1', 'plan2']}
     test_info2 = copy.deepcopy(unittest_constants.MODULE_INFO2)
-    test_info2.data = {'execution_plans': ['plan3']}
+    test_info2.data = {'execution_plans': ['plan2', 'plan3']}
 
     args = acme_utils.create_atest_execution_plan_suite_runner_test_args(
         [test_info1, test_info2]
     )
 
+    # plan2 appears in two TestInfo, but only needs to be passed in once.
     expected_args = [
         '--execution-plans',
         'plan1',

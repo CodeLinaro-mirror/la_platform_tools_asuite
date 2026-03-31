@@ -14,6 +14,7 @@
 
 """Unit tests for run_direct_mode.py."""
 
+import argparse
 import sys
 import unittest
 from unittest import mock
@@ -37,14 +38,32 @@ TEST_CONFIGS = test_configs_pb2.TestConfigs(
         acme_test_constants.TEST_WORKFLOW_3,
     ],
     triggers=[
-        acme_test_constants.TEST_TRIGGER_LIST_WORKFLOW_REFERENCE_ONLY,
-        acme_test_constants.TEST_TRIGGER_LIST_WORKFLOW_2_REFERENCE_ONLY,
+        acme_test_constants.TEST_TRIGGER_1_REFERENCE_ONLY,
+        acme_test_constants.TEST_TRIGGER_2_REFERENCE_ONLY,
     ],
 )
 
 
 class RunDirectModeUnittest(unittest.TestCase):
   """Unit tests for run_direct_mode.py."""
+
+  @mock.patch.object(acme_utils, 'ensure_no_incompatible_args', autospec=True)
+  def test_process_parsed_args(
+      self,
+      mock_ensure_no_incompatible_args,
+  ):
+    """Test process_parsed_args calls ensure_no_incompatible_args."""
+    args_dict = {
+        'test_execution_plans': ['plan1'],
+        'tests': [],
+    }
+    args = argparse.Namespace(**args_dict)
+
+    # Function call.
+    run_direct_mode.process_parsed_args(args)
+
+    # Assertions.
+    mock_ensure_no_incompatible_args.assert_called_once_with(args)
 
   @mock.patch.object(
       acme_utils, 'create_test_details_from_test_execution_plans', autospec=True
@@ -361,9 +380,7 @@ class RunDirectModeUnittest(unittest.TestCase):
             acme_test_constants.TEST_EXECUTION_PLAN_3.name
         ],
         test_workflow_names=[acme_test_constants.TEST_WORKFLOW_2.name],
-        test_trigger_names=[
-            acme_test_constants.TEST_TRIGGER_LIST_WORKFLOW.name
-        ],
+        test_trigger_names=[acme_test_constants.TEST_TRIGGER_1.name],
     )
     actual_return_val = zip(tests, test_details)
     expected_return_val = zip(
@@ -393,9 +410,7 @@ class RunDirectModeUnittest(unittest.TestCase):
             acme_test_constants.TEST_EXECUTION_PLAN_3.name
         ],
         test_workflow_names=[acme_test_constants.TEST_WORKFLOW_2.name],
-        test_trigger_names=[
-            acme_test_constants.TEST_TRIGGER_LIST_WORKFLOW.name
-        ],
+        test_trigger_names=[acme_test_constants.TEST_TRIGGER_1.name],
     )
 
     self.assertCountEqual(

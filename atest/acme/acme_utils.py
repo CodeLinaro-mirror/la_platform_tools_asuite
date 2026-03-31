@@ -14,11 +14,15 @@
 
 """Util functions for running ACME Test Configurations via atest."""
 
+import argparse
 import dataclasses
+import glob
 import pathlib
 import subprocess
+import sys
 import typing
 
+from atest import atest_enum
 from atest import atest_utils
 from atest import constants
 from atest import test_mapping
@@ -34,6 +38,34 @@ REDUCE_TEST_CONFIGS_OUTPUT_SUB_PATH = (
 TEST_CONFIGS_BUILD_TARGET = 'test-configs-zip'
 TEST_CONFIGS_OUTPUT_SUB_PATH = 'soong/test-configs/test_configs.pb'
 TEST_CONFIGS_ZIP_PATH = 'soong/test-configs.zip'
+ALL_SCHEDULING_PLANS = 'all'
+
+# Run affected triggers flags.
+RUN_AFFECTED_TRIGGERS_ARG_NAME = '--run-affected-triggers'
+SCHEDULING_PLAN_ARG_NAME = '--scheduling-plan'
+DEFAULT_SCHEDULING_PLAN = 'presubmit'
+CURRENT_PROJECT_ARG_NAME = '--current-project'
+PROJECTS_ARG_NAME = '--projects'
+FILE_PATHS_ARG_NAME = '--file-paths'
+
+# Run direct mode flags.
+RUN_TEST_EXECUTION_PLANS_ARG_NAME = '--test-execution-plans'
+RUN_TEST_TRIGGERS_ARG_NAME = '--test-triggers'
+RUN_TEST_WORKFLOWS_ARG_NAME = '--test-workflows'
+
+ACME_INCOMPATIBLE_ARGS = {
+    'tests': 'positional tests',
+    'test_mapping': '--test-mapping',
+    'smart_test_selection': '--smart-test-selection',
+    'host_unit_test_only': '--host-unit-test-only',
+}
+
+ACME_TRIGGER_ARGS = {
+    'run_affected_triggers': RUN_AFFECTED_TRIGGERS_ARG_NAME,
+    'test_execution_plans': RUN_TEST_EXECUTION_PLANS_ARG_NAME,
+    'test_triggers': RUN_TEST_TRIGGERS_ARG_NAME,
+    'test_workflows': RUN_TEST_WORKFLOWS_ARG_NAME,
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -87,9 +119,8 @@ def get_reduced_test_configs(
     cmd.append('-projects')
     cmd.extend(projects)
   if file_paths:
-    cmd.append('--filepaths')
-    relative_file_paths, _ = get_file_paths_relative_to_build_top(file_paths)
-    cmd.extend(relative_file_paths)
+    cmd.append('-filepaths')
+    cmd.extend(file_paths)
 
   # TODO: b/460119831 - Return a more informative error message.
   subprocess.run(cmd, cwd=atest_utils.get_build_top(), check=True)
@@ -107,7 +138,10 @@ def get_file_paths_relative_to_build_top(
   invalid_file_paths = []
   for fp in file_paths:
     try:
-      resolved_path = pathlib.Path(fp).resolve(strict=True)
+      if glob.has_magic(fp):
+        if not glob.glob(fp, recursive=True):
+          raise FileNotFoundError
+      resolved_path = pathlib.Path(fp).resolve(strict=not glob.has_magic(fp))
       relative_paths.append(
           str(resolved_path.relative_to(atest_utils.get_build_top()))
       )
@@ -147,24 +181,18 @@ def get_filtered_test_execution_plans(
   # Filter test execution plans based on the scheduling plan.
   test_execution_plans = []
   for test_trigger in test_configs.triggers:
-    # Handle inline workflows.
-    if test_trigger.inline.scheduling_plan.name == scheduling_plan_name:
-      test_exec_plan = test_configs_pb2.TestExecutionPlan(
-          name=f'{test_trigger.name}_inline_plan',  # Give it a unique name.
-          tests=test_trigger.inline.tests,
-      )
-      test_execution_plans.append(test_exec_plan)
-    # Handle a list workflows.
-    else:
-      for workflow in test_trigger.list.workflows:
-        # Search for the workflow in the named_test_workflows_map if the
-        # workflow proto only contains a reference.
-        if not workflow.HasField('scheduling_plan'):
-          workflow = named_test_workflows_map.get(workflow.name)
+    # The test-configs-zip only contains triggers with workflow collections.
+    # Context: b/484309276.
+    for workflow in test_trigger.list.workflows:
+      # Search for the workflow in the named_test_workflows_map if the
+      # workflow proto only contains a reference.
+      if not workflow.HasField('scheduling_plan'):
+        workflow = named_test_workflows_map.get(workflow.name)
 
-        if workflow.scheduling_plan.name != scheduling_plan_name:
-          continue
-
+      if (
+          workflow.scheduling_plan.name == scheduling_plan_name
+          or scheduling_plan_name == ALL_SCHEDULING_PLANS
+      ):
         test_exec_plan_name = workflow.execution_plan.name
         test_exec_plan = named_test_exec_plans_map.get(test_exec_plan_name)
         if test_exec_plan:
@@ -246,13 +274,38 @@ def create_atest_execution_plan_suite_runner_test_args(
 ) -> list[str]:
   """Create test arguments for invoking AtestExecutionPlanSuiteRunner."""
   args = []
-  unique_exec_plans = []
+  unique_exec_plans = set()
   for ti in test_infos:
-    unique_exec_plans.extend(ti.data.get('execution_plans', []))
-  for exec_plan in unique_exec_plans:
+    unique_exec_plans.update(ti.data.get('execution_plans', []))
+  for exec_plan in sorted(unique_exec_plans):
     args.append('--execution-plans')
     args.append(exec_plan)
   test_configs_zip_path = atest_utils.get_build_out_dir(TEST_CONFIGS_ZIP_PATH)
   args.extend(['--extra-file', f'test-configs.zip={test_configs_zip_path}'])
   args.extend(['--config-zip-paths', 'test-configs.zip'])
   return args
+
+
+def ensure_no_incompatible_args(args: argparse.Namespace):
+  """Validates ACME arguments are not used with incompatible arguments."""
+  used_acme_flags = [
+      flag
+      for arg, flag in ACME_TRIGGER_ARGS.items()
+      if getattr(args, arg, None)
+  ]
+
+  if not used_acme_flags:
+    return
+
+  used_incompatible_args = [
+      flag
+      for arg, flag in ACME_INCOMPATIBLE_ARGS.items()
+      if getattr(args, arg, None)
+  ]
+
+  if used_incompatible_args:
+    atest_utils.print_and_log_error(
+        f'The following arguments: {used_acme_flags} '
+        f'cannot be used in conjunction with: {used_incompatible_args}'
+    )
+    sys.exit(atest_enum.ExitCode.INVALID_RUN_AFFECTED_TRIGGERS_ARGS)
