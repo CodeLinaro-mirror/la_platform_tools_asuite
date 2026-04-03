@@ -32,9 +32,12 @@ import dataclasses
 import functools
 import itertools
 import logging
+import multiprocessing
 import os
 import platform
+import queue
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -53,9 +56,11 @@ from atest import constants
 from atest import device_update
 from atest import module_info
 from atest import result_reporter
+from atest import rollout_control
 from atest import test_runner_handler
 from atest.atest_enum import DetectType
 from atest.atest_enum import ExitCode
+from atest.atest_enum import ModuleInfoAutoRebuildTriggerStat
 from atest.atest_execution_info import create_symlink_to_result
 from atest.coverage import coverage
 from atest.crystalball import perf_mode
@@ -106,10 +111,11 @@ class _StreamToLogger:
   def __init__(self, logger, log_level, printer, silent_mode=False):
     self._logger = logger
     self._log_level = log_level
-    self._printer = printer
-    self._buffers = []
-    if silent_mode and self._printer == sys.stdout:
+    if silent_mode:
       self._printer = open(os.devnull, 'w')
+    else:
+      self._printer = printer
+    self._buffers = []
 
   def write(self, buf: str) -> None:
     self._printer.write(buf)
@@ -245,9 +251,14 @@ def _configure_logging(results_dir: str):
   logging.addLevelName(stdout_log_level, 'STDOUT')
   logging.addLevelName(stderr_log_level, 'STDERR')
   sys.stdout = _StreamToLogger(
-      logger, stdout_log_level, sys.stdout, silent_mode=os.environ.get('GEMINI_CLI') == '1'
+      logger,
+      stdout_log_level,
+      sys.stdout,
+      silent_mode=os.environ.get('GEMINI_CLI', '0') == '1',
   )
-  sys.stderr = _StreamToLogger(logger, stderr_log_level, sys.stderr, silent_mode=False)
+  sys.stderr = _StreamToLogger(
+      logger, stderr_log_level, sys.stderr, silent_mode=False
+  )
 
 
 def _missing_environment_variables():
@@ -441,6 +452,7 @@ def _validate_adb_devices(args, test_infos):
           f'Stop running test(s): {", ".join(device_tests)}, '
           'all devices are offline.'
       )
+      metrics.LocalDetectEvent(detect_type=DetectType.DEVICE_OFFLINE, result=1)
       _handle_no_device_error(err_msg, ExitCode.DEVICE_OFFLINE)
 
 
@@ -649,6 +661,8 @@ class _AtestMain:
     self._module_info_rebuild_required: bool = False
     self._is_out_clean_before_module_info_build: bool = False
     self._invocation_begin_time: float = None
+    self._early_check_queue: multiprocessing.Queue = None
+    self._early_check_proc: multiprocessing.Process = None
 
   def run(self):
     self._results_dir = make_test_run_dir()
@@ -934,7 +948,9 @@ class _AtestMain:
     self._is_out_clean_before_module_info_build = not os.path.exists(
         os.environ.get(constants.ANDROID_PRODUCT_OUT, '')
     )
-    self._module_info_rebuild_required = force_build or self._need_rebuild_module_info()
+    self._module_info_rebuild_required = (
+        force_build or self._need_rebuild_module_info()
+    )
     logging.debug(
         'need_rebuild_module_info returned %s',
         self._module_info_rebuild_required,
@@ -970,20 +986,45 @@ class _AtestMain:
     """
     indexing_thread = self._start_indexing_if_required()
 
-    self._test_infos, translate_duration = self._get_test_infos(
-        indexing_thread
-    )
+    self._test_infos, translate_duration = self._get_test_infos(indexing_thread)
 
-    if not self._test_infos and not self._module_info_rebuild_required:
-      print('Did you just add a new test file?')
-      print(
-          'Automatically re-trying with module-info rebuilding and searching'
-          ' again...'
-      )
-      self._test_infos, translate_time_retry = self._get_test_infos(
-          indexing_thread, force_build=True
-      )
-      translate_duration += translate_time_retry
+    if (
+        not self._test_infos
+        and rollout_control.auto_rebuild_module_info.is_enabled()
+    ):
+      if self._module_info_rebuild_required:
+        metrics.LocalDetectEvent(
+            detect_type=DetectType.MODULE_INFO_AUTO_REBUILD_TRIGGER_STAT,
+            result=ModuleInfoAutoRebuildTriggerStat.INITIAL_TEST_NOT_FOUND_AUTO_REBUILT_NOT_TRIGGERED,
+        )
+      else:
+        print()
+        print(atest_utils.mark_green('Did you just add a new test file?'))
+        print(
+            atest_utils.mark_green(
+                'Automatically re-trying with module-info rebuilding and'
+                ' searching again...'
+            )
+        )
+        metrics.LocalDetectEvent(
+            detect_type=DetectType.MODULE_INFO_AUTO_REBUILD_TRIGGER_STAT,
+            result=ModuleInfoAutoRebuildTriggerStat.INITIAL_TEST_NOT_FOUND_AUTO_REBUILT_TRIGGERED,
+        )
+        self._test_infos, translate_time_retry = self._get_test_infos(
+            indexing_thread, force_build=True
+        )
+        translate_duration += translate_time_retry
+
+        if self._test_infos:
+          metrics.LocalDetectEvent(
+              detect_type=DetectType.MODULE_INFO_AUTO_REBUILD_TRIGGER_STAT,
+              result=ModuleInfoAutoRebuildTriggerStat.INITIAL_TEST_NOT_FOUND_AUTO_REBUILT_TRIGGERED_AND_TEST_FOUND,
+          )
+        else:
+          metrics.LocalDetectEvent(
+              detect_type=DetectType.MODULE_INFO_AUTO_REBUILD_TRIGGER_STAT,
+              result=ModuleInfoAutoRebuildTriggerStat.INITIAL_TEST_NOT_FOUND_AUTO_REBUILT_TRIGGERED_STILL_TEST_NOT_FOUND,
+          )
 
     args_injection_start = time.time()
 
@@ -1285,6 +1326,82 @@ class _AtestMain:
 
     return None
 
+  def _perform_early_device_check(self) -> int | None:
+    """Performs an early device check if required.
+
+    Returns:
+        Exit code if devices are required but not available. None if the check
+        passes or is deferred.
+    """
+    skip_early_check = any([
+        self._args.host,
+        not self._steps.test,
+        self._args.no_checking_device,
+        self._args.collect_tests_only,
+        self._args.host_unit_test_only,
+        self._args.clear_cache,
+    ])
+    if skip_early_check:
+      logging.debug('Skipping early device check due to arguments.')
+      return None
+
+    if self._args.tests:
+      cached_test_infos = []
+      all_tests_cached = True
+
+      for test_ref in self._args.tests:
+        logging.debug('Loading test info cache for %s', test_ref)
+        test_infos = atest_utils.load_test_info_cache(test_ref)
+        if test_infos:
+          cached_test_infos.extend(test_infos)
+        else:
+          all_tests_cached = False
+
+      if cached_test_infos:
+        logging.debug('Using cached test infos for early device check.')
+        _validate_adb_devices(self._args, cached_test_infos)
+        if all_tests_cached:
+          return None
+
+    if not atest_utils.get_product_out('module-info.json').is_file():
+      logging.debug('No product out found, deferring early device check.')
+      return None
+
+    logging.debug('Performing early device check.')
+    temp_mod_info = module_info.load(
+        force_build=False,
+        sqlite_module_cache=self._args.sqlite_module_cache,
+    )
+    if not temp_mod_info:
+      logging.debug('Could not load module info for early check, deferring.')
+      return None
+
+    translator = cli_translator.CLITranslator(
+        mod_info=temp_mod_info,
+        print_cache_msg=False,
+        host=self._args.host,
+        indexing_thread=None,
+    )
+    temp_test_infos = translator.translate(self._args)
+
+    if not temp_test_infos:
+      logging.debug('No tests found in early translation, deferring device check.')
+      return None
+
+    _validate_adb_devices(self._args, temp_test_infos)
+    return None
+
+  def _async_early_device_check(self, queue: multiprocessing.Queue):
+    """Performs an early device check in a separate process."""
+    try:
+      exit_code = self._perform_early_device_check()
+      if exit_code is not None:
+        queue.put(exit_code)
+        os.kill(os.getppid(), signal.SIGINT)
+    except SystemExit as e:
+      queue.put(e.code)
+      os.kill(os.getppid(), signal.SIGINT)
+
   def _run_all_steps(self) -> int:
     """Executes the atest script.
 
@@ -1307,25 +1424,52 @@ class _AtestMain:
 
     self._start_acloud_if_requested()
 
-    error_code = self._load_test_info_and_execution_plan()
-    if error_code is not None:
-      return error_code
+    if rollout_control.early_device_check.is_enabled():
+      self._early_check_queue = multiprocessing.Queue()
 
-    if self._steps.build:
-      error_code = self._run_build_step()
+      self._early_check_proc = atest_utils.run_multi_proc(
+          func=self._async_early_device_check,
+          args=(self._early_check_queue,),
+      )
+
+    try:
+      error_code = self._load_test_info_and_execution_plan()
+      if (
+          self._early_check_queue is not None
+          and not self._early_check_queue.empty()
+      ):
+        return self._early_check_queue.get()
       if error_code is not None:
         return error_code
 
-    acloud_status = self._check_acloud_status()
-    if acloud_status:
-      return acloud_status
+      if self._steps.build:
+        error_code = self._run_build_step()
+        if error_code is not None:
+          return error_code
 
-    self._update_device_if_requested()
+      acloud_status = self._check_acloud_status()
+      if acloud_status:
+        return acloud_status
 
-    if self._steps.test and self._run_test_step() != ExitCode.SUCCESS:
-      return ExitCode.TEST_FAILURE
+      self._update_device_if_requested()
 
-    return ExitCode.SUCCESS
+      if self._steps.test and self._run_test_step() != ExitCode.SUCCESS:
+        return ExitCode.TEST_FAILURE
+
+      return ExitCode.SUCCESS
+    except KeyboardInterrupt:
+      if self._early_check_queue is not None:
+        try:
+          return self._early_check_queue.get(timeout=0.1)
+        except queue.Empty:
+          pass
+      raise
+    finally:
+      if (
+          self._early_check_proc is not None
+          and self._early_check_proc.is_alive()
+      ):
+        self._early_check_proc.terminate()
 
 
 class _TestExecutionPlan(abc.ABC):
@@ -1524,7 +1668,6 @@ class _TestMappingExecutionPlan(_TestExecutionPlan):
           wait_for_debugger=atest_configs.GLOBAL_ARGS.wait_for_debugger,
           args=self._args,
           test_infos=self._test_infos,
-          print_all_using_stderr=(os.environ.get('GEMINI_CLI') == '1'),
       )
       reporter.print_starting_text()
 
@@ -1633,7 +1776,6 @@ class _TestModuleExecutionPlan(_TestExecutionPlan):
         'args': self._args,
         'test_infos': self._test_infos,
         'class_level_report': self._args.class_level_report,
-        'print_all_using_stderr': os.environ.get('GEMINI_CLI') == '1',
     }
     if self._args.smart_test_selection:
       reporter_kwargs['class_level_report'] = True

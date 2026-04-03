@@ -247,3 +247,24 @@ use_atest_execution_plan_suite_runner = RolloutControlledFeature(
     feature_id=5,
     print_message='Running tests using ExecutionPlanSuiteRunner.',
 )
+
+auto_rebuild_module_info = RolloutControlledFeature(
+    name='Auto rebuild module info',
+    rollout_percentage=1,
+    env_control_flag='AUTO_REBUILD_MODULE_INFO',
+    feature_id=6,
+    randomization_type=_RandomizationType.BY_RUN_ID,
+)
+
+early_device_check = RolloutControlledFeature(
+    name='Early device check',
+    rollout_percentage=10,
+    env_control_flag='EARLY_DEVICE_CHECK',
+    feature_id=7,
+    randomization_type=_RandomizationType.BY_RUN_ID,
+    print_message=(
+        'You are selected to use the feature of fast failing upon no device'
+        ' detection for device tests. Please feel free to report to'
+        ' b/495505638 if you find any issues.'
+    ),
+)
