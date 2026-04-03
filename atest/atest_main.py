@@ -33,9 +33,9 @@ import functools
 import itertools
 import logging
 import multiprocessing
-import queue
 import os
 import platform
+import queue
 import shlex
 import signal
 import subprocess
@@ -1330,7 +1330,8 @@ class _AtestMain:
     """Performs an early device check if required.
 
     Returns:
-        Exit code if an early device issue is detected, None otherwise.
+        Exit code if devices are required but not available. None if the check
+        passes or is deferred.
     """
     skip_early_check = any([
         self._args.host,
@@ -1338,10 +1339,29 @@ class _AtestMain:
         self._args.no_checking_device,
         self._args.collect_tests_only,
         self._args.host_unit_test_only,
+        self._args.clear_cache,
     ])
     if skip_early_check:
       logging.debug('Skipping early device check due to arguments.')
       return None
+
+    if self._args.tests:
+      cached_test_infos = []
+      all_tests_cached = True
+
+      for test_ref in self._args.tests:
+        logging.debug('Loading test info cache for %s', test_ref)
+        test_infos = atest_utils.load_test_info_cache(test_ref)
+        if test_infos:
+          cached_test_infos.extend(test_infos)
+        else:
+          all_tests_cached = False
+
+      if cached_test_infos:
+        logging.debug('Using cached test infos for early device check.')
+        _validate_adb_devices(self._args, cached_test_infos)
+        if all_tests_cached:
+          return None
 
     if not atest_utils.get_product_out('module-info.json').is_file():
       logging.debug('No product out found, deferring early device check.')
