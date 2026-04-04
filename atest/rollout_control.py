@@ -258,7 +258,7 @@ auto_rebuild_module_info = RolloutControlledFeature(
 
 early_device_check = RolloutControlledFeature(
     name='Early device check',
-    rollout_percentage=10,
+    rollout_percentage=0,
     env_control_flag='EARLY_DEVICE_CHECK',
     feature_id=7,
     randomization_type=_RandomizationType.BY_RUN_ID,
