@@ -90,6 +90,11 @@ impl Device for RealDevice {
         )
     }
 
+    fn check_connectivity(&self) -> Result<()> {
+        self.run_raw_adb_command(&["get-state".to_string()])?;
+        Ok(())
+    }
+
     fn prep_after_flash(&self, profiler: &mut Profiler) -> Result<()> {
         progress::start(" * [1/2] Remounting device");
         let timeout = Duration::from_secs(60);
@@ -310,7 +315,7 @@ pub fn run_process_with_retry_until_timeout(
         info!("       {} {:?}", output.status, String::from_utf8(output.stderr).expect("stderr"));
         sleep(delay);
     }
-    bail!("Command failed to execute {}", cmd.to_string());
+    bail!("Command failed to execute {}", cmd);
 }
 
 pub fn update(

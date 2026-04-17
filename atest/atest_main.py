@@ -56,6 +56,7 @@ from atest import result_reporter
 from atest import test_runner_handler
 from atest.atest_enum import DetectType
 from atest.atest_enum import ExitCode
+from atest.atest_execution_info import create_symlink_to_result
 from atest.coverage import coverage
 from atest.crystalball import perf_mode
 from atest.metrics import metrics
@@ -102,11 +103,13 @@ _SMART_TEST_SELECTION_FLAG = '--sts'
 class _StreamToLogger:
   """A file like class to that redirect writes to a printer and logger."""
 
-  def __init__(self, logger, log_level, printer):
+  def __init__(self, logger, log_level, printer, silent_mode=False):
     self._logger = logger
     self._log_level = log_level
     self._printer = printer
     self._buffers = []
+    if silent_mode and self._printer == sys.stdout:
+      self._printer = open(os.devnull, 'w')
 
   def write(self, buf: str) -> None:
     self._printer.write(buf)
@@ -241,8 +244,10 @@ def _configure_logging(results_dir: str):
   stderr_log_level = 45
   logging.addLevelName(stdout_log_level, 'STDOUT')
   logging.addLevelName(stderr_log_level, 'STDERR')
-  sys.stdout = _StreamToLogger(logger, stdout_log_level, sys.stdout)
-  sys.stderr = _StreamToLogger(logger, stderr_log_level, sys.stderr)
+  sys.stdout = _StreamToLogger(
+      logger, stdout_log_level, sys.stdout, silent_mode=os.environ.get('GEMINI_CLI') == '1'
+  )
+  sys.stderr = _StreamToLogger(logger, stderr_log_level, sys.stderr, silent_mode=False)
 
 
 def _missing_environment_variables():
@@ -274,6 +279,9 @@ def make_test_run_dir() -> str:
       prefix=f'{ctime}_', dir=constants.ATEST_RESULT_ROOT
   )
   print(_RESULTS_DIR_PRINT_PREFIX + test_result_dir)
+
+  current_symlink = create_symlink_to_result(test_result_dir, 'CURRENT')
+  print(f'Or use: {current_symlink}')
   return test_result_dir
 
 
@@ -301,6 +309,7 @@ _ARG_TO_CONST_MAP = {
     'tf_template': constants.TF_TEMPLATE,
     'user_type': constants.USER_TYPE,
     'verbose': constants.VERBOSE,
+    'run_in_compatibility_mode': constants.RUN_IN_COMPATIBILITY_MODE,
     'wait_for_debugger': constants.WAIT_FOR_DEBUGGER,
     'use_tf_min_base_template': constants.USE_TF_MIN_BASE_TEMPLATE,
     'smart_test_selection': constants.SMART_TEST_SELECTION,
@@ -412,22 +421,35 @@ def _validate_adb_devices(args, test_infos):
   all_device_modes = {x.get_supported_exec_mode() for x in test_infos}
   # Only block testing if it is a device test.
   if constants.DEVICE_TEST in all_device_modes:
+    device_tests = [
+        x.test_name
+        for x in test_infos
+        if x.get_supported_exec_mode() != constants.DEVICELESS_TEST
+    ]
+
     if (
         not any((args.host, args.start_avd, args.acloud_create))
         and not atest_utils.get_adb_devices()
     ):
-      device_tests = [
-          x.test_name
-          for x in test_infos
-          if x.get_supported_exec_mode() != constants.DEVICELESS_TEST
-      ]
       err_msg = (
           f'Stop running test(s): {", ".join(device_tests)} require a device.'
       )
-      atest_utils.colorful_print(err_msg, constants.RED)
-      logging.debug(atest_utils.mark_red(constants.REQUIRE_DEVICES_MSG))
-      metrics_utils.send_exit_event(ExitCode.DEVICE_NOT_FOUND, logs=err_msg)
-      sys.exit(ExitCode.DEVICE_NOT_FOUND)
+      _handle_no_device_error(err_msg, ExitCode.DEVICE_NOT_FOUND)
+
+    if atest_utils.are_all_devices_offline():
+      err_msg = (
+          f'Stop running test(s): {", ".join(device_tests)}, '
+          'all devices are offline.'
+      )
+      _handle_no_device_error(err_msg, ExitCode.DEVICE_OFFLINE)
+
+
+def _handle_no_device_error(err_msg, exit_code):
+  """Handles device related errors by logging, printing, and exiting."""
+  atest_utils.colorful_print(err_msg, constants.RED)
+  logging.debug(atest_utils.mark_red(constants.REQUIRE_DEVICES_MSG))
+  metrics_utils.send_exit_event(exit_code, logs=err_msg)
+  sys.exit(exit_code)
 
 
 def _validate_tm_tests_exec_mode(
@@ -908,11 +930,11 @@ class _AtestMain:
       logging.debug('Found build files were changed.')
     return build_files_changed
 
-  def _load_module_info(self):
+  def _load_module_info(self, force_build: bool = False):
     self._is_out_clean_before_module_info_build = not os.path.exists(
         os.environ.get(constants.ANDROID_PRODUCT_OUT, '')
     )
-    self._module_info_rebuild_required = self._need_rebuild_module_info()
+    self._module_info_rebuild_required = force_build or self._need_rebuild_module_info()
     logging.debug(
         'need_rebuild_module_info returned %s',
         self._module_info_rebuild_required,
@@ -924,6 +946,22 @@ class _AtestMain:
     )
     logging.debug('Obtained module info object: %s', self._mod_info)
 
+  def _get_test_infos(
+      self, indexing_thread: threading.Thread, force_build: bool = False
+  ) -> tuple[list[test_info.TestInfo], float]:
+    """Creates a translator and returns the test infos and translate duration."""
+    self._load_module_info(force_build)
+    translator = cli_translator.CLITranslator(
+        mod_info=self._mod_info,
+        print_cache_msg=not self._args.clear_cache,
+        host=self._args.host,
+        indexing_thread=indexing_thread,
+    )
+    translate_start = time.time()
+    test_infos = translator.translate(self._args)
+    translate_duration = time.time() - translate_start
+    return test_infos, translate_duration
+
   def _load_test_info_and_execution_plan(self) -> int | None:
     """Loads test info and execution plan.
 
@@ -932,17 +970,22 @@ class _AtestMain:
     """
     indexing_thread = self._start_indexing_if_required()
 
-    self._load_module_info()
-
-    translator = cli_translator.CLITranslator(
-        mod_info=self._mod_info,
-        print_cache_msg=not self._args.clear_cache,
-        host=self._args.host,
-        indexing_thread=indexing_thread,
+    self._test_infos, translate_duration = self._get_test_infos(
+        indexing_thread
     )
 
-    find_start = time.time()
-    self._test_infos = translator.translate(self._args)
+    if not self._test_infos and not self._module_info_rebuild_required:
+      print('Did you just add a new test file?')
+      print(
+          'Automatically re-trying with module-info rebuilding and searching'
+          ' again...'
+      )
+      self._test_infos, translate_time_retry = self._get_test_infos(
+          indexing_thread, force_build=True
+      )
+      translate_duration += translate_time_retry
+
+    args_injection_start = time.time()
 
     _AtestMain._inject_default_arguments_based_on_test_infos(
         self._test_infos, self._args
@@ -957,7 +1000,9 @@ class _AtestMain:
     ):
       return ExitCode.INSUFFICIENT_DEVICES
 
-    self._test_info_loading_duration = time.time() - find_start
+    self._test_info_loading_duration = (
+        time.time() - args_injection_start + translate_duration
+    )
     if not self._test_infos:
       return ExitCode.TEST_NOT_FOUND
 
@@ -1479,6 +1524,7 @@ class _TestMappingExecutionPlan(_TestExecutionPlan):
           wait_for_debugger=atest_configs.GLOBAL_ARGS.wait_for_debugger,
           args=self._args,
           test_infos=self._test_infos,
+          print_all_using_stderr=(os.environ.get('GEMINI_CLI') == '1'),
       )
       reporter.print_starting_text()
 
@@ -1587,6 +1633,7 @@ class _TestModuleExecutionPlan(_TestExecutionPlan):
         'args': self._args,
         'test_infos': self._test_infos,
         'class_level_report': self._args.class_level_report,
+        'print_all_using_stderr': os.environ.get('GEMINI_CLI') == '1',
     }
     if self._args.smart_test_selection:
       reporter_kwargs['class_level_report'] = True

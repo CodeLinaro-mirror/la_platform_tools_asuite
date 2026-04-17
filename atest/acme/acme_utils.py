@@ -16,6 +16,7 @@
 
 import argparse
 import dataclasses
+import glob
 import pathlib
 import subprocess
 import sys
@@ -118,9 +119,8 @@ def get_reduced_test_configs(
     cmd.append('-projects')
     cmd.extend(projects)
   if file_paths:
-    cmd.append('--filepaths')
-    relative_file_paths, _ = get_file_paths_relative_to_build_top(file_paths)
-    cmd.extend(relative_file_paths)
+    cmd.append('-filepaths')
+    cmd.extend(file_paths)
 
   # TODO: b/460119831 - Return a more informative error message.
   subprocess.run(cmd, cwd=atest_utils.get_build_top(), check=True)
@@ -138,7 +138,10 @@ def get_file_paths_relative_to_build_top(
   invalid_file_paths = []
   for fp in file_paths:
     try:
-      resolved_path = pathlib.Path(fp).resolve(strict=True)
+      if glob.has_magic(fp):
+        if not glob.glob(fp, recursive=True):
+          raise FileNotFoundError
+      resolved_path = pathlib.Path(fp).resolve(strict=not glob.has_magic(fp))
       relative_paths.append(
           str(resolved_path.relative_to(atest_utils.get_build_top()))
       )
@@ -177,32 +180,19 @@ def get_filtered_test_execution_plans(
 
   # Filter test execution plans based on the scheduling plan.
   test_execution_plans = []
-  # TODO: b/484309276 - The test-configs-zip expands inline test configs now.
   for test_trigger in test_configs.triggers:
-    # Handle inline workflows.
-    if test_trigger.HasField('inline') and (
-        test_trigger.inline.scheduling_plan.name == scheduling_plan_name
-        or scheduling_plan_name == ALL_SCHEDULING_PLANS
-    ):
-      test_exec_plan = test_configs_pb2.TestExecutionPlan(
-          name=f'{test_trigger.name}_inline_plan',  # Give it a unique name.
-          tests=test_trigger.inline.tests,
-      )
-      test_execution_plans.append(test_exec_plan)
-    # Handle a list workflows.
-    elif test_trigger.HasField('list'):
-      for workflow in test_trigger.list.workflows:
-        # Search for the workflow in the named_test_workflows_map if the
-        # workflow proto only contains a reference.
-        if not workflow.HasField('scheduling_plan'):
-          workflow = named_test_workflows_map.get(workflow.name)
+    # The test-configs-zip only contains triggers with workflow collections.
+    # Context: b/484309276.
+    for workflow in test_trigger.list.workflows:
+      # Search for the workflow in the named_test_workflows_map if the
+      # workflow proto only contains a reference.
+      if not workflow.HasField('scheduling_plan'):
+        workflow = named_test_workflows_map.get(workflow.name)
 
-        if not (
-            workflow.scheduling_plan.name == scheduling_plan_name
-            or scheduling_plan_name == ALL_SCHEDULING_PLANS
-        ):
-          continue
-
+      if (
+          workflow.scheduling_plan.name == scheduling_plan_name
+          or scheduling_plan_name == ALL_SCHEDULING_PLANS
+      ):
         test_exec_plan_name = workflow.execution_plan.name
         test_exec_plan = named_test_exec_plans_map.get(test_exec_plan_name)
         if test_exec_plan:
@@ -284,10 +274,10 @@ def create_atest_execution_plan_suite_runner_test_args(
 ) -> list[str]:
   """Create test arguments for invoking AtestExecutionPlanSuiteRunner."""
   args = []
-  unique_exec_plans = []
+  unique_exec_plans = set()
   for ti in test_infos:
-    unique_exec_plans.extend(ti.data.get('execution_plans', []))
-  for exec_plan in unique_exec_plans:
+    unique_exec_plans.update(ti.data.get('execution_plans', []))
+  for exec_plan in sorted(unique_exec_plans):
     args.append('--execution-plans')
     args.append(exec_plan)
   test_configs_zip_path = atest_utils.get_build_out_dir(TEST_CONFIGS_ZIP_PATH)
