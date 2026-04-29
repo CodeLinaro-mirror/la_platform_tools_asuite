@@ -21,18 +21,23 @@
 import datetime
 from importlib import reload
 import os
+import queue
+import signal
 import subprocess
 import tempfile
 from typing import List
 import unittest
 from unittest import mock
+
 from atest import arg_parser
 from atest import atest_main
 from atest import atest_utils
 from atest import constants
 from atest import module_info
+from atest import rollout_control
 from atest.atest_enum import DetectType
 from atest.atest_enum import ExitCode
+from atest.atest_enum import ModuleInfoAutoRebuildTriggerStat
 from atest.metrics import metrics_utils
 from atest.test_finders import test_info
 from pyfakefs import fake_filesystem_unittest
@@ -495,6 +500,463 @@ class AtestMainUnitTests(unittest.TestCase):
         pseudo_atest_main._check_envs_and_args(),
         ExitCode.INVALID_CROSS_BRANCH_ARGS,
     )
+
+  @mock.patch.object(
+      rollout_control.auto_rebuild_module_info,
+      'is_enabled',
+      return_value=True,
+      autospec=True,
+  )
+  @mock.patch('atest.metrics.metrics.LocalDetectEvent', autospec=True)
+  @mock.patch.object(atest_main._AtestMain, '_get_test_infos')
+  @mock.patch.object(atest_main._AtestMain, '_start_indexing_if_required')
+  @mock.patch.object(
+      atest_main._AtestMain, '_inject_default_arguments_based_on_test_infos'
+  )
+  @mock.patch.object(atest_main, 'get_device_count_config', return_value=0)
+  @mock.patch.object(atest_main._TestExecutionPlan, 'create')
+  def test_load_test_info_and_execution_plan_test_not_found_auto_rebuilt_not_triggered(
+      self,
+      _mock_create,
+      _mock_device,
+      _mock_inject,
+      _mock_indexing,
+      _mock_get_test_infos,
+      mock_metrics,
+      _mock_is_enabled,
+  ):
+    """Tests when test is not found and auto rebuild is not triggered."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=[])
+    pseudo_atest_main._module_info_rebuild_required = True
+    pseudo_atest_main._results_dir = ''
+    pseudo_atest_main._mod_info = None
+
+    _mock_get_test_infos.return_value = ([], 0)
+
+    pseudo_atest_main._load_test_info_and_execution_plan()
+
+    mock_metrics.assert_called_with(
+        detect_type=DetectType.MODULE_INFO_AUTO_REBUILD_TRIGGER_STAT,
+        result=ModuleInfoAutoRebuildTriggerStat.INITIAL_TEST_NOT_FOUND_AUTO_REBUILT_NOT_TRIGGERED,
+    )
+
+  @mock.patch.object(
+      rollout_control.auto_rebuild_module_info,
+      'is_enabled',
+      return_value=True,
+      autospec=True,
+  )
+  @mock.patch('atest.metrics.metrics.LocalDetectEvent', autospec=True)
+  @mock.patch.object(atest_main._AtestMain, '_get_test_infos')
+  @mock.patch.object(atest_main._AtestMain, '_start_indexing_if_required')
+  @mock.patch.object(
+      atest_main._AtestMain, '_inject_default_arguments_based_on_test_infos'
+  )
+  @mock.patch.object(atest_main, 'get_device_count_config', return_value=0)
+  @mock.patch.object(atest_main._TestExecutionPlan, 'create')
+  def test_load_test_info_and_execution_plan_test_not_found_auto_rebuilt_triggered(
+      self,
+      _mock_create,
+      _mock_device,
+      _mock_inject,
+      _mock_indexing,
+      _mock_get_test_infos,
+      mock_metrics,
+      _mock_is_enabled,
+  ):
+    """Tests when test is not found and auto rebuild is triggered, but user interrupts."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=[])
+    pseudo_atest_main._module_info_rebuild_required = False
+    pseudo_atest_main._results_dir = ''
+    pseudo_atest_main._mod_info = None
+
+    _mock_get_test_infos.side_effect = [([], 0), KeyboardInterrupt()]
+
+    with self.assertRaises(KeyboardInterrupt):
+      pseudo_atest_main._load_test_info_and_execution_plan()
+
+    mock_metrics.assert_called_once_with(
+        detect_type=DetectType.MODULE_INFO_AUTO_REBUILD_TRIGGER_STAT,
+        result=ModuleInfoAutoRebuildTriggerStat.INITIAL_TEST_NOT_FOUND_AUTO_REBUILT_TRIGGERED,
+    )
+
+  @mock.patch.object(
+      rollout_control.auto_rebuild_module_info,
+      'is_enabled',
+      return_value=True,
+      autospec=True,
+  )
+  @mock.patch('atest.metrics.metrics.LocalDetectEvent', autospec=True)
+  @mock.patch.object(atest_main._AtestMain, '_get_test_infos')
+  @mock.patch.object(atest_main._AtestMain, '_start_indexing_if_required')
+  @mock.patch.object(
+      atest_main._AtestMain, '_inject_default_arguments_based_on_test_infos'
+  )
+  @mock.patch.object(atest_main, 'get_device_count_config', return_value=0)
+  @mock.patch.object(atest_main._TestExecutionPlan, 'create')
+  def test_load_test_info_and_execution_plan_test_not_found_auto_rebuilt_triggered_and_test_found(
+      self,
+      _mock_create,
+      _mock_device,
+      _mock_inject,
+      _mock_indexing,
+      _mock_get_test_infos,
+      mock_metrics,
+      _mock_is_enabled,
+  ):
+    """Tests when test is not found, auto rebuild is triggered, and retry finds it."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=[])
+    pseudo_atest_main._module_info_rebuild_required = False
+    pseudo_atest_main._results_dir = ''
+    pseudo_atest_main._mod_info = None
+
+    _mock_get_test_infos.side_effect = [([], 0), (['fake_test_info'], 0)]
+
+    pseudo_atest_main._load_test_info_and_execution_plan()
+
+    mock_metrics.assert_has_calls(
+        [
+            mock.call(
+                detect_type=DetectType.MODULE_INFO_AUTO_REBUILD_TRIGGER_STAT,
+                result=ModuleInfoAutoRebuildTriggerStat.INITIAL_TEST_NOT_FOUND_AUTO_REBUILT_TRIGGERED,
+            ),
+            mock.call(
+                detect_type=DetectType.MODULE_INFO_AUTO_REBUILD_TRIGGER_STAT,
+                result=ModuleInfoAutoRebuildTriggerStat.INITIAL_TEST_NOT_FOUND_AUTO_REBUILT_TRIGGERED_AND_TEST_FOUND,
+            ),
+        ],
+        any_order=False,
+    )
+
+  @mock.patch.object(
+      rollout_control.auto_rebuild_module_info,
+      'is_enabled',
+      return_value=True,
+      autospec=True,
+  )
+  @mock.patch('atest.metrics.metrics.LocalDetectEvent', autospec=True)
+  @mock.patch.object(atest_main._AtestMain, '_get_test_infos')
+  @mock.patch.object(atest_main._AtestMain, '_start_indexing_if_required')
+  @mock.patch.object(
+      atest_main._AtestMain, '_inject_default_arguments_based_on_test_infos'
+  )
+  @mock.patch.object(atest_main, 'get_device_count_config', return_value=0)
+  @mock.patch.object(atest_main._TestExecutionPlan, 'create')
+  def test_load_test_info_and_execution_plan_test_not_found_auto_rebuilt_triggered_still_test_not_found(
+      self,
+      _mock_create,
+      _mock_device,
+      _mock_inject,
+      _mock_indexing,
+      _mock_get_test_infos,
+      mock_metrics,
+      _mock_is_enabled,
+  ):
+    """Tests when test is not found, auto rebuild is triggered, and retry still doesn't find it."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=[])
+    pseudo_atest_main._module_info_rebuild_required = False
+    pseudo_atest_main._results_dir = ''
+    pseudo_atest_main._mod_info = None
+
+    _mock_get_test_infos.return_value = ([], 0)
+
+    pseudo_atest_main._load_test_info_and_execution_plan()
+
+    mock_metrics.assert_has_calls(
+        [
+            mock.call(
+                detect_type=DetectType.MODULE_INFO_AUTO_REBUILD_TRIGGER_STAT,
+                result=ModuleInfoAutoRebuildTriggerStat.INITIAL_TEST_NOT_FOUND_AUTO_REBUILT_TRIGGERED,
+            ),
+            mock.call(
+                detect_type=DetectType.MODULE_INFO_AUTO_REBUILD_TRIGGER_STAT,
+                result=ModuleInfoAutoRebuildTriggerStat.INITIAL_TEST_NOT_FOUND_AUTO_REBUILT_TRIGGERED_STILL_TEST_NOT_FOUND,
+            ),
+        ],
+        any_order=False,
+    )
+
+  @mock.patch.object(
+      rollout_control.early_device_check, 'is_enabled', return_value=False
+  )
+  def test_perform_early_device_check_disabled(self, _mock_is_enabled):
+    """Tests that early device check is skipped when disabled."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=[])
+    pseudo_atest_main._steps = atest_main.parse_steps(pseudo_atest_main._args)
+    self.assertIsNone(pseudo_atest_main._perform_early_device_check())
+
+  @mock.patch.object(
+      rollout_control.early_device_check, 'is_enabled', return_value=True
+  )
+  def test_perform_early_device_check_skip(self, _mock_is_enabled):
+    """Tests that early device check is skipped for host tests."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=['--host'])
+    pseudo_atest_main._steps = atest_main.parse_steps(pseudo_atest_main._args)
+    self.assertIsNone(pseudo_atest_main._perform_early_device_check())
+
+  @mock.patch.object(
+      rollout_control.early_device_check, 'is_enabled', return_value=True
+  )
+  @mock.patch.object(atest_utils, 'get_product_out')
+  @mock.patch.object(module_info, 'load', return_value=None)
+  def test_perform_early_device_check_no_mod_info(self, _mock_load, mock_get_product_out, _mock_is_enabled):
+    """Tests that early device check defers when module info fails to load."""
+    mock_get_product_out.return_value.is_file.return_value = True
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=[])
+    pseudo_atest_main._steps = atest_main.parse_steps(pseudo_atest_main._args)
+    self.assertIsNone(pseudo_atest_main._perform_early_device_check())
+    _mock_load.assert_called_once()
+
+  @mock.patch.object(
+      rollout_control.early_device_check, 'is_enabled', return_value=True
+  )
+  @mock.patch.object(atest_utils, 'get_product_out')
+  @mock.patch.object(module_info, 'load', return_value=mock.MagicMock())
+  @mock.patch('atest.cli_translator.CLITranslator.translate', return_value=[])
+  def test_perform_early_device_check_no_test_infos(self, _mock_translate, _mock_load, mock_get_product_out, _mock_is_enabled):
+    """Tests that early device check defers when no test infos are found."""
+    mock_get_product_out.return_value.is_file.return_value = True
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=[])
+    pseudo_atest_main._steps = atest_main.parse_steps(pseudo_atest_main._args)
+    self.assertIsNone(pseudo_atest_main._perform_early_device_check())
+    _mock_translate.assert_called_once()
+
+  @mock.patch.object(
+      rollout_control.early_device_check, 'is_enabled', return_value=True
+  )
+  @mock.patch.object(atest_utils, 'get_product_out')
+  @mock.patch.object(module_info, 'load', return_value=mock.MagicMock())
+  @mock.patch('atest.cli_translator.CLITranslator.translate', return_value=['fake_test_info'])
+  @mock.patch.object(atest_main, '_validate_adb_devices')
+  def test_perform_early_device_check_success(self, _mock_validate, _mock_translate, _mock_load, mock_get_product_out, _mock_is_enabled):
+    """Tests that early device check calls validation successfully."""
+    mock_get_product_out.return_value.is_file.return_value = True
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=[])
+    pseudo_atest_main._steps = atest_main.parse_steps(pseudo_atest_main._args)
+    self.assertIsNone(pseudo_atest_main._perform_early_device_check())
+    _mock_validate.assert_called_once_with(pseudo_atest_main._args, ['fake_test_info'])
+
+  @mock.patch.object(
+      rollout_control.early_device_check, 'is_enabled', return_value=True
+  )
+  @mock.patch.object(atest_utils, 'get_product_out')
+  def test_perform_early_device_check_no_module_info_file(self, mock_get_product_out, _mock_is_enabled):
+    """Tests that early device check defers when module-info.json is missing."""
+    mock_get_product_out.return_value.is_file.return_value = False
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=[])
+    pseudo_atest_main._steps = atest_main.parse_steps(pseudo_atest_main._args)
+    self.assertIsNone(pseudo_atest_main._perform_early_device_check())
+    mock_get_product_out.assert_called_once_with('module-info.json')
+
+  @mock.patch('os.kill')
+  @mock.patch('os.getppid', return_value=1234)
+  @mock.patch.object(atest_main._AtestMain, '_perform_early_device_check')
+  def test_async_early_device_check_success(self, mock_perform, _mock_getppid, mock_kill):
+    """Tests that async check does not signal when successful."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    mock_queue = mock.MagicMock()
+    mock_perform.return_value = None
+
+    pseudo_atest_main._async_early_device_check(mock_queue)
+
+    mock_queue.put.assert_not_called()
+    mock_kill.assert_not_called()
+
+  @mock.patch('os.kill')
+  @mock.patch('os.getppid', return_value=1234)
+  @mock.patch.object(atest_main._AtestMain, '_perform_early_device_check')
+  def test_async_early_device_check_failure(self, mock_perform, _mock_getppid, mock_kill):
+    """Tests that async check signals main process when failing."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    mock_queue = mock.MagicMock()
+    mock_perform.return_value = ExitCode.DEVICE_NOT_FOUND
+
+    pseudo_atest_main._async_early_device_check(mock_queue)
+
+    mock_queue.put.assert_called_once_with(ExitCode.DEVICE_NOT_FOUND)
+    mock_kill.assert_called_once_with(1234, signal.SIGINT)
+
+  @mock.patch('os.kill')
+  @mock.patch('os.getppid', return_value=1234)
+  @mock.patch.object(atest_main._AtestMain, '_perform_early_device_check')
+  def test_async_early_device_check_system_exit(self, mock_perform, _mock_getppid, mock_kill):
+    """Tests that async check signals main process when raising SystemExit."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    mock_queue = mock.MagicMock()
+    mock_perform.side_effect = SystemExit(ExitCode.DEVICE_NOT_FOUND)
+
+    pseudo_atest_main._async_early_device_check(mock_queue)
+
+    mock_queue.put.assert_called_once_with(ExitCode.DEVICE_NOT_FOUND)
+    mock_kill.assert_called_once_with(1234, signal.SIGINT)
+
+  @mock.patch.object(rollout_control.early_device_check, 'is_enabled', return_value=True)
+  @mock.patch('atest.atest_utils.run_multi_proc')
+  @mock.patch('multiprocessing.Queue')
+  @mock.patch.object(atest_main._AtestMain, '_load_test_info_and_execution_plan')
+  @mock.patch.object(atest_main._AtestMain, '_check_envs_and_args', return_value=None)
+  @mock.patch.object(atest_main._AtestMain, '_update_build_env')
+  @mock.patch.object(atest_main._AtestMain, '_send_start_event')
+  @mock.patch.object(atest_main._AtestMain, '_handle_special_commands', return_value=None)
+  @mock.patch.object(atest_main._AtestMain, '_start_acloud_if_requested')
+  def test_run_all_steps_async_device_check_interrupts(
+      self,
+      _mock_start_acloud,
+      _mock_handle_special,
+      _mock_send_start,
+      _mock_update_build,
+      _mock_check_envs,
+      mock_load_test_info,
+      mock_queue,
+      _mock_run_multi_proc,
+      _mock_is_enabled,
+  ):
+    """Test early device check failure returns exit code quietly without stack trace."""
+    mock_queue_instance = mock.MagicMock()
+    mock_queue_instance.get.return_value = ExitCode.DEVICE_NOT_FOUND
+    mock_queue.return_value = mock_queue_instance
+
+    mock_load_test_info.side_effect = KeyboardInterrupt()
+
+    atest = atest_main._AtestMain(['atest', 'hello_world_test'])
+    atest._args = mock.MagicMock()
+    atest._steps = mock.MagicMock()
+
+    exit_code = atest._run_all_steps()
+
+    self.assertEqual(exit_code, ExitCode.DEVICE_NOT_FOUND)
+
+  @mock.patch.object(rollout_control.early_device_check, 'is_enabled', return_value=True)
+  @mock.patch('atest.atest_utils.run_multi_proc')
+  @mock.patch('multiprocessing.Queue')
+  @mock.patch.object(atest_main._AtestMain, '_load_test_info_and_execution_plan', return_value=None)
+  @mock.patch.object(atest_main._AtestMain, '_check_envs_and_args', return_value=None)
+  @mock.patch.object(atest_main._AtestMain, '_update_build_env')
+  @mock.patch.object(atest_main._AtestMain, '_send_start_event')
+  @mock.patch.object(atest_main._AtestMain, '_handle_special_commands', return_value=None)
+  @mock.patch.object(atest_main._AtestMain, '_start_acloud_if_requested')
+  def test_run_all_steps_async_device_check_fast_failure(
+      self,
+      _mock_start_acloud,
+      _mock_handle_special,
+      _mock_send_start,
+      _mock_update_build,
+      _mock_check_envs,
+      _mock_load_test_info,
+      mock_queue_cls,
+      mock_run_multi_proc,
+      _mock_is_enabled,
+  ):
+    """Tests that main process returns fast if queue has item before exception."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=[])
+    pseudo_atest_main._steps = atest_main.parse_steps(pseudo_atest_main._args)
+
+    mock_queue = mock.MagicMock()
+    mock_queue_cls.return_value = mock_queue
+    mock_queue.empty.return_value = False
+    mock_queue.get.return_value = ExitCode.DEVICE_NOT_FOUND
+
+    mock_proc = mock.MagicMock()
+    mock_proc.is_alive.return_value = False
+    mock_run_multi_proc.return_value = mock_proc
+
+    exit_code = pseudo_atest_main._run_all_steps()
+
+    self.assertEqual(exit_code, ExitCode.DEVICE_NOT_FOUND)
+    mock_proc.terminate.assert_not_called()
+
+  @mock.patch.object(rollout_control.early_device_check, 'is_enabled', return_value=True)
+  @mock.patch('atest.atest_utils.run_multi_proc')
+  @mock.patch('multiprocessing.Queue')
+  @mock.patch.object(atest_main._AtestMain, '_load_test_info_and_execution_plan')
+  @mock.patch.object(atest_main._AtestMain, '_check_envs_and_args', return_value=None)
+  @mock.patch.object(atest_main._AtestMain, '_update_build_env')
+  @mock.patch.object(atest_main._AtestMain, '_send_start_event')
+  @mock.patch.object(atest_main._AtestMain, '_handle_special_commands', return_value=None)
+  @mock.patch.object(atest_main._AtestMain, '_start_acloud_if_requested')
+  def test_run_all_steps_user_keyboard_interrupt(
+      self,
+      _mock_start_acloud,
+      _mock_handle_special,
+      _mock_send_start,
+      _mock_update_build,
+      _mock_check_envs,
+      mock_load_test_info,
+      mock_queue,
+      _mock_run_multi_proc,
+      _mock_is_enabled,
+  ):
+    """Test user KeyboardInterrupt is properly raised and not swallowed."""
+    mock_queue_instance = mock.MagicMock()
+    mock_queue_instance.get.side_effect = queue.Empty
+    mock_queue.return_value = mock_queue_instance
+
+    mock_load_test_info.side_effect = KeyboardInterrupt()
+
+    atest = atest_main._AtestMain(['atest', 'hello_world_test'])
+    atest._args = mock.MagicMock()
+    atest._steps = mock.MagicMock()
+
+    with self.assertRaises(KeyboardInterrupt):
+      atest._run_all_steps()
+
+  @mock.patch.object(rollout_control.early_device_check, 'is_enabled', return_value=True)
+  @mock.patch('atest.atest_utils.run_multi_proc')
+  @mock.patch('multiprocessing.Queue')
+  @mock.patch.object(atest_main._AtestMain, '_load_test_info_and_execution_plan', return_value=None)
+  @mock.patch.object(atest_main._AtestMain, '_check_envs_and_args', return_value=None)
+  @mock.patch.object(atest_main._AtestMain, '_update_build_env')
+  @mock.patch.object(atest_main._AtestMain, '_send_start_event')
+  @mock.patch.object(atest_main._AtestMain, '_handle_special_commands', return_value=None)
+  @mock.patch.object(atest_main._AtestMain, '_start_acloud_if_requested')
+  @mock.patch.object(atest_main._AtestMain, '_run_build_step', return_value=None)
+  @mock.patch.object(atest_main._AtestMain, '_check_acloud_status', return_value=None)
+  @mock.patch.object(atest_main._AtestMain, '_update_device_if_requested')
+  @mock.patch.object(atest_main._AtestMain, '_run_test_step', return_value=ExitCode.SUCCESS)
+  def test_run_all_steps_async_device_check_success_terminates_proc(
+      self,
+      _mock_run_test,
+      _mock_update_device,
+      _mock_check_acloud,
+      _mock_run_build,
+      _mock_start_acloud,
+      _mock_handle_special,
+      _mock_send_start,
+      _mock_update_build,
+      _mock_check_envs,
+      _mock_load_test_info,
+      mock_queue_cls,
+      mock_run_multi_proc,
+      _mock_is_enabled,
+  ):
+    """Tests successful run where async check is still alive and gets terminated."""
+    pseudo_atest_main = atest_main._AtestMain(argv=[])
+    pseudo_atest_main._args = atest_main._parse_args(argv=[])
+    pseudo_atest_main._steps = atest_main.parse_steps(pseudo_atest_main._args)
+
+    mock_queue = mock.MagicMock()
+    mock_queue_cls.return_value = mock_queue
+    mock_queue.empty.return_value = True
+
+    mock_proc = mock.MagicMock()
+    mock_proc.is_alive.return_value = True
+    mock_run_multi_proc.return_value = mock_proc
+
+    exit_code = pseudo_atest_main._run_all_steps()
+
+    self.assertEqual(exit_code, ExitCode.SUCCESS)
+    mock_proc.terminate.assert_called_once()
 
 
 # pylint: disable=missing-function-docstring
